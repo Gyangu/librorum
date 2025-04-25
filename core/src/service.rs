@@ -1,5 +1,4 @@
 use tonic::{Request, Response, Status};
-use crate::error::Result;
 use crate::fs::LocalFileSystem;
 use crate::proto::vdfs::{
     vdfs_service_server::VdfsService,

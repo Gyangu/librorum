@@ -17,7 +17,6 @@ use crate::sync::SyncManager;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use std::path::PathBuf;
 use tokio::fs as tokio_fs;
 use std::os::unix::fs::PermissionsExt;
 
