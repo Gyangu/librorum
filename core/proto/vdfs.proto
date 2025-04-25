@@ -1,0 +1,185 @@
+syntax = "proto3";
+
+package vdfs;
+
+// VDFS 服务定义
+service VDFSService {
+    // 文件系统操作
+    rpc ListDirectory (ListDirectoryRequest) returns (ListDirectoryResponse);
+    rpc GetFileInfo (GetFileInfoRequest) returns (GetFileInfoResponse);
+    rpc CreateFile (CreateFileRequest) returns (CreateFileResponse);
+    rpc DeleteFile (DeleteFileRequest) returns (DeleteFileResponse);
+    rpc MoveFile (MoveFileRequest) returns (MoveFileResponse);
+    rpc CopyFile (CopyFileRequest) returns (CopyFileResponse);
+    
+    // 文件内容操作
+    rpc ReadFile (ReadFileRequest) returns (stream ReadFileResponse);
+    rpc WriteFile (stream WriteFileRequest) returns (WriteFileResponse);
+    
+    // 元数据同步
+    rpc SyncMetadata (SyncMetadataRequest) returns (stream SyncMetadataResponse);
+    rpc GetNodeStatus (GetNodeStatusRequest) returns (GetNodeStatusResponse);
+    
+    // 文件传输
+    rpc DropFile (DropFileRequest) returns (stream DropFileResponse);
+    rpc ReceiveFile (stream ReceiveFileRequest) returns (ReceiveFileResponse);
+}
+
+// 请求和响应消息定义
+message ListDirectoryRequest {
+    string path = 1;
+    string node_id = 2;
+}
+
+message ListDirectoryResponse {
+    repeated FileInfo entries = 1;
+}
+
+message GetFileInfoRequest {
+    string path = 1;
+    string node_id = 2;
+}
+
+message GetFileInfoResponse {
+    FileInfo info = 1;
+}
+
+message CreateFileRequest {
+    string path = 1;
+    FileType type = 2;
+    string node_id = 3;
+}
+
+message CreateFileResponse {
+    FileInfo info = 1;
+}
+
+message DeleteFileRequest {
+    string path = 1;
+    string node_id = 2;
+}
+
+message DeleteFileResponse {
+    bool success = 1;
+}
+
+message MoveFileRequest {
+    string source_path = 1;
+    string target_path = 2;
+    string source_node = 3;
+    string target_node = 4;
+}
+
+message MoveFileResponse {
+    bool success = 1;
+}
+
+message CopyFileRequest {
+    string source_path = 1;
+    string target_path = 2;
+    string source_node = 3;
+    string target_node = 4;
+}
+
+message CopyFileResponse {
+    bool success = 1;
+}
+
+message ReadFileRequest {
+    string path = 1;
+    int64 offset = 2;
+    int64 length = 3;
+    string node_id = 4;
+}
+
+message ReadFileResponse {
+    bytes data = 1;
+}
+
+message WriteFileRequest {
+    string path = 1;
+    int64 offset = 2;
+    bytes data = 3;
+    string node_id = 4;
+}
+
+message WriteFileResponse {
+    int64 bytes_written = 1;
+}
+
+// 元数据同步消息
+message SyncMetadataRequest {
+    string node_id = 1;
+    int64 last_sync_time = 2;
+}
+
+message SyncMetadataResponse {
+    repeated FileInfo files = 1;
+    int64 sync_time = 2;
+}
+
+message GetNodeStatusRequest {
+    string node_id = 1;
+}
+
+message GetNodeStatusResponse {
+    NodeStatus status = 1;
+}
+
+// 文件传输消息
+message DropFileRequest {
+    string file_id = 1;
+    string source_node = 2;
+    string target_node = 3;
+}
+
+message DropFileResponse {
+    oneof response {
+        FileInfo file_info = 1;
+        bytes chunk = 2;
+        string error = 3;
+    }
+}
+
+message ReceiveFileRequest {
+    oneof request {
+        FileInfo file_info = 1;
+        bytes chunk = 2;
+    }
+}
+
+message ReceiveFileResponse {
+    bool success = 1;
+    string error = 2;
+}
+
+// 通用消息定义
+message FileInfo {
+    string id = 1;
+    string name = 2;
+    string path = 3;
+    FileType type = 4;
+    int64 size = 5;
+    int64 created_at = 6;
+    int64 modified_at = 7;
+    int64 accessed_at = 8;
+    string owner_node = 9;
+    repeated string available_nodes = 10;
+    map<string, string> attributes = 11;
+}
+
+message NodeStatus {
+    string id = 1;
+    string name = 2;
+    string host = 3;
+    int32 port = 4;
+    int64 last_seen = 5;
+    bool is_online = 6;
+}
+
+enum FileType {
+    UNKNOWN = 0;
+    FILE = 1;
+    DIRECTORY = 2;
+    SYMLINK = 3;
+} 
