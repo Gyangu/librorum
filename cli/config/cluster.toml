@@ -1,0 +1,16 @@
+# 集群配置
+cluster_id = "cluster1"
+name = "示例集群"
+discovery_port = 50050
+
+# 成员配置
+[members]
+min_nodes = 1
+max_nodes = 10
+join_token = "default-join-token"
+
+# 复制配置
+[replication]
+strategy = "distributed"
+min_replicas = 2
+consistency_level = "majority" 

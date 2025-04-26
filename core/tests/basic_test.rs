@@ -1,16 +1,60 @@
-use librorum_core::{config::{NodeConfig, ClusterConfig}, start_server};
-use tokio;
+use librorum_core::{
+    config::{NodeConfig, ClusterConfig},
+    start_server,
+};
+use std::path::PathBuf;
+use tokio::time::sleep;
+use std::time::Duration;
 use librorum_core::proto::vdfs::{
     vdfs_service_client::VdfsServiceClient,
     CreateFileRequest, ReadFileRequest, WriteFileRequest,
     ListDirectoryRequest, GetFileInfoRequest, FileType,
+    CreateDirectoryRequest,
 };
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
 
 #[tokio::test]
-async fn test_basic_functionality() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_basic_functionality() {
+    // Create a test configuration
+    let node_config = NodeConfig {
+        id: "test-node".to_string(),
+        name: "Test Node".to_string(),
+        host: "127.0.0.1".to_string(),
+        port: 50051,
+        root_dir: PathBuf::from("test_data"),
+        max_file_size: 1024 * 1024,
+        chunk_size: 1024,
+        workers: 1,
+    };
+
+    // Save the configuration
+    let config_path = PathBuf::from("test_config.toml");
+    std::fs::write(&config_path, toml::to_string(&node_config).unwrap()).unwrap();
+
+    // Start the server
+    let server_handle = tokio::spawn(async move {
+        let addr = format!("{}:{}", node_config.host, node_config.port);
+        if let Err(e) = start_server(node_config, &addr).await {
+            eprintln!("Failed to start server: {}", e);
+            return;
+        }
+    });
+
+    // Wait for the server to start
+    sleep(Duration::from_secs(1)).await;
+
+    // Clean up
+    std::fs::remove_file(&config_path).unwrap();
+    std::fs::remove_dir_all("test_data").unwrap();
+
+    // Stop the server
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn test_basic_functionality_old() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== 开始基础功能测试 ===");
     
     // 创建临时目录用于测试

@@ -21,13 +21,17 @@ config = "0.13"
 dirs = "5.0"
 notify = "6.0"
 uuid = { version = "1.0", features = ["v4"] }
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
-chrono = { version = "0.4", features = ["serde"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"] }
+chrono = "0.4"
 tokio-stream = "0.1"
-tokio-util = { version = "0.7", features = ["codec"] }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
 bytes = "1.0"
 toml = "0.8"
-num_cpus = "1.16"
+num_cpus = "1.0"
+socket2 = "0.5"
+rand = "0.8"
+clap = { version = "4.4", features = ["derive"] }
+futures-util = "0.3"
 
 [build-dependencies]
 tonic-build = "0.10"
@@ -36,4 +40,10 @@ tonic-build = "0.10"
 path = "src/lib.rs"
 
 [dev-dependencies]
-tempfile = "3.8" 
+tempfile = "3.8"
+futures-util = "0.3"
+tokio-test = "0.4"
+
+[[bin]]
+name = "vdfs"
+path = "src/main.rs" 

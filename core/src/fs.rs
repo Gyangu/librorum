@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use tokio::fs;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncSeekExt};
 use crate::error::{Result, VDFSError};
 
 #[derive(Debug, Clone)]
@@ -30,6 +31,14 @@ impl LocalFileSystem {
                 .map_err(|e| VDFSError::Io(e))?;
         }
         fs::File::create(&full_path)
+            .await
+            .map_err(|e| VDFSError::Io(e))?;
+        Ok(())
+    }
+
+    pub async fn create_dir(&self, path: impl AsRef<Path>) -> Result<()> {
+        let full_path = self.get_path(path);
+        fs::create_dir_all(&full_path)
             .await
             .map_err(|e| VDFSError::Io(e))?;
         Ok(())
@@ -84,5 +93,31 @@ impl LocalFileSystem {
             entries.push(entry.path());
         }
         Ok(entries)
+    }
+
+    pub async fn read_file_chunk(&self, path: &str, offset: u64, size: u64) -> Result<Vec<u8>> {
+        let file_path = self.root_dir.join(path);
+        let mut file = tokio::fs::File::open(&file_path).await?;
+        file.seek(std::io::SeekFrom::Start(offset)).await?;
+        
+        let mut buffer = vec![0; size as usize];
+        let bytes_read = file.read(&mut buffer).await?;
+        buffer.truncate(bytes_read);
+        
+        Ok(buffer)
+    }
+
+    pub async fn write_file_chunk(&self, path: &str, offset: u64, data: &[u8]) -> Result<()> {
+        let file_path = self.root_dir.join(path);
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&file_path)
+            .await?;
+            
+        file.seek(std::io::SeekFrom::Start(offset)).await?;
+        file.write_all(data).await?;
+        
+        Ok(())
     }
 } 

@@ -308,15 +308,35 @@ impl VdfsService for VDFSServiceImpl {
                     )),
                 })).await;
 
-                // 读取并发送文件内容
-                if let Ok(data) = fs.read_file(&file.path, 0, file.size as usize).await {
-                    let _ = tx.send(Ok(DropFileResponse {
-                        response: Some(crate::proto::vdfs::drop_file_response::Response::Chunk(data)),
-                    })).await;
+                // 分块读取并发送文件内容
+                let chunk_size = 1024 * 1024; // 1MB 分块
+                let mut offset = 0;
+                while offset < file.size {
+                    let read_size = std::cmp::min(chunk_size, file.size - offset);
+                    match fs.read_file_chunk(&file.path, offset, read_size).await {
+                        Ok(chunk) => {
+                            let _ = tx.send(Ok(DropFileResponse {
+                                response: Some(crate::proto::vdfs::drop_file_response::Response::Chunk(chunk)),
+                            })).await;
+                            offset += read_size;
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Ok(DropFileResponse {
+                                response: Some(crate::proto::vdfs::drop_file_response::Response::Error(e.to_string())),
+                            })).await;
+                            break;
+                        }
+                    }
                 }
+            } else {
+                let _ = tx.send(Ok(DropFileResponse {
+                    response: Some(crate::proto::vdfs::drop_file_response::Response::Error(
+                        "文件不存在".to_string(),
+                    )),
+                })).await;
             }
         });
-        
+
         Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(rx)))
     }
 
@@ -326,40 +346,60 @@ impl VdfsService for VDFSServiceImpl {
     ) -> Result<Response<ReceiveFileResponse>, Status> {
         let mut stream = request.into_inner();
         let mut file_info = None;
-        let mut file_data = None;
-        
-        while let Some(req) = stream.message().await? {
+        let mut file_path = None;
+        let mut offset = 0;
+
+        while let Some(req) = stream.message().await.map_err(|e| Status::internal(e.to_string()))? {
             match req.request {
                 Some(crate::proto::vdfs::receive_file_request::Request::FileInfo(info)) => {
                     file_info = Some(info);
+                    file_path = Some(format!("{}/{}", self.fs.get_root_dir(), info.name));
                 }
-                Some(crate::proto::vdfs::receive_file_request::Request::Chunk(data)) => {
-                    file_data = Some(data);
+                Some(crate::proto::vdfs::receive_file_request::Request::Chunk(chunk)) => {
+                    if let Some(path) = &file_path {
+                        match self.fs.write_file_chunk(path, offset, &chunk).await {
+                            Ok(_) => {
+                                offset += chunk.len() as u64;
+                            }
+                            Err(e) => {
+                                return Ok(Response::new(ReceiveFileResponse {
+                                    success: false,
+                                    error: e.to_string(),
+                                }));
+                            }
+                        }
+                    }
                 }
-                None => return Err(Status::invalid_argument("Invalid request")),
+                None => {}
             }
         }
-        
-        if let (Some(info), Some(data)) = (file_info, file_data) {
-            // 创建文件
-            let file_type = match info.r#type {
-                1 => crate::fs::FileType::File,
-                2 => crate::fs::FileType::Directory,
-                3 => crate::fs::FileType::Symlink,
-                _ => crate::fs::FileType::Unknown,
-            };
-            
-            self.fs.create_file(&info.path, file_type).await?;
-            
-            // 写入文件内容
-            self.fs.write_file(&info.path, 0, &data).await?;
-            
-            Ok(Response::new(ReceiveFileResponse {
-                success: true,
-                error: String::new(),
-            }))
-        } else {
-            Err(Status::invalid_argument("Missing file info or data"))
+
+        if let Some(info) = file_info {
+            // 更新元数据
+            let mut metadata = self.metadata.write().await;
+            metadata.add_file(FileMetadata {
+                id: info.id,
+                name: info.name,
+                path: info.path,
+                size: info.size as u64,
+                file_type: match info.r#type {
+                    1 => crate::fs::FileType::File,
+                    2 => crate::fs::FileType::Directory,
+                    3 => crate::fs::FileType::Symlink,
+                    _ => crate::fs::FileType::Unknown,
+                },
+                created_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(info.created_at as u64),
+                modified_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(info.modified_at as u64),
+                accessed_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(info.accessed_at as u64),
+                owner_node: info.owner_node,
+                available_nodes: info.available_nodes,
+                attributes: info.attributes,
+            });
         }
+
+        Ok(Response::new(ReceiveFileResponse {
+            success: true,
+            error: String::new(),
+        }))
     }
 } 

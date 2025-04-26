@@ -3,11 +3,12 @@ syntax = "proto3";
 package vdfs;
 
 // VDFS 服务定义
-service VDFSService {
+service VdfsService {
     // 文件系统操作
     rpc ListDirectory (ListDirectoryRequest) returns (ListDirectoryResponse);
     rpc GetFileInfo (GetFileInfoRequest) returns (GetFileInfoResponse);
     rpc CreateFile (CreateFileRequest) returns (CreateFileResponse);
+    rpc CreateDirectory (CreateDirectoryRequest) returns (CreateDirectoryResponse);
     rpc DeleteFile (DeleteFileRequest) returns (DeleteFileResponse);
     rpc MoveFile (MoveFileRequest) returns (MoveFileResponse);
     rpc CopyFile (CopyFileRequest) returns (CopyFileResponse);
@@ -23,6 +24,23 @@ service VDFSService {
     // 文件传输
     rpc DropFile (DropFileRequest) returns (stream DropFileResponse);
     rpc ReceiveFile (stream ReceiveFileRequest) returns (ReceiveFileResponse);
+    
+    // 节点通信
+    rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+    rpc GetClusterInfo(GetClusterInfoRequest) returns (GetClusterInfoResponse);
+    rpc UpdateNodeStatus(UpdateNodeStatusRequest) returns (UpdateNodeStatusResponse);
+    
+    // 节点发现与心跳
+    rpc DiscoverNodes(DiscoverNodesRequest) returns (DiscoverNodesResponse);
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+    rpc JoinCluster(JoinClusterRequest) returns (JoinClusterResponse);
+    rpc LeaveCluster(LeaveClusterRequest) returns (LeaveClusterResponse);
+}
+
+// 文件传输服务
+service FileTransfer {
+    rpc UploadFile(stream FileChunk) returns (FileTransferResponse);
+    rpc DownloadFile(FileTransferRequest) returns (stream FileChunk);
 }
 
 // 请求和响应消息定义
@@ -51,6 +69,15 @@ message CreateFileRequest {
 }
 
 message CreateFileResponse {
+    FileInfo info = 1;
+}
+
+message CreateDirectoryRequest {
+    string path = 1;
+    string node_id = 2;
+}
+
+message CreateDirectoryResponse {
     FileInfo info = 1;
 }
 
@@ -123,7 +150,7 @@ message GetNodeStatusRequest {
 }
 
 message GetNodeStatusResponse {
-    NodeStatus status = 1;
+    NodeInfo status = 1;
 }
 
 // 文件传输消息
@@ -168,18 +195,152 @@ message FileInfo {
     map<string, string> attributes = 11;
 }
 
-message NodeStatus {
-    string id = 1;
-    string name = 2;
-    string host = 3;
-    int32 port = 4;
-    int64 last_seen = 5;
-    bool is_online = 6;
-}
-
 enum FileType {
     UNKNOWN = 0;
     FILE = 1;
     DIRECTORY = 2;
     SYMLINK = 3;
+}
+
+// 节点状态枚举
+enum NodeStatus {
+    NODE_UNKNOWN = 0;
+    NODE_ONLINE = 1;
+    NODE_OFFLINE = 2;
+    NODE_MAINTENANCE = 3;
+}
+
+// 节点信息
+message NodeInfo {
+    string id = 1;
+    string name = 2;
+    string host = 3;
+    int32 port = 4;
+    NodeStatus status = 5;
+    int64 last_seen = 6;
+}
+
+// 集群信息
+message ClusterInfo {
+    repeated NodeInfo nodes = 1;
+    int64 last_updated = 2;
+}
+
+// 节点注册请求
+message RegisterNodeRequest {
+    NodeInfo node_info = 1;
+}
+
+// 节点注册响应
+message RegisterNodeResponse {
+    bool success = 1;
+    NodeInfo node_info = 2;
+    string error = 3;
+}
+
+// 获取集群信息请求
+message GetClusterInfoRequest {}
+
+// 获取集群信息响应
+message GetClusterInfoResponse {
+    ClusterInfo cluster_info = 1;
+}
+
+// 更新节点状态请求
+message UpdateNodeStatusRequest {
+    string node_id = 1;
+    NodeStatus status = 2;
+    int64 last_seen = 3;
+}
+
+// 更新节点状态响应
+message UpdateNodeStatusResponse {
+    bool success = 1;
+    string error = 2;
+}
+
+// 节点发现请求
+message DiscoverNodesRequest {
+    string node_id = 1;
+    string network = 2;        // 网络标识，如局域网、公网等
+    int32 discovery_port = 3;  // 发现端口号
+    int32 max_nodes = 4;       // 最大返回节点数
+}
+
+// 节点发现响应
+message DiscoverNodesResponse {
+    repeated NodeInfo nodes = 1;
+}
+
+// 心跳请求
+message HeartbeatRequest {
+    string node_id = 1;
+    int64 timestamp = 2;
+    NodeStatus status = 3;
+    // 节点负载信息
+    double cpu_usage = 4;
+    double memory_usage = 5;
+    double disk_usage = 6;
+    int32 active_connections = 7;
+}
+
+// 心跳响应
+message HeartbeatResponse {
+    bool acknowledged = 1;
+    int64 server_timestamp = 2;
+    string cluster_id = 3;
+}
+
+// 加入集群请求
+message JoinClusterRequest {
+    NodeInfo node_info = 1;
+    string cluster_id = 2;
+    string join_token = 3;  // 可选的安全令牌
+}
+
+// 加入集群响应
+message JoinClusterResponse {
+    bool success = 1;
+    string error = 2;
+    ClusterInfo cluster_info = 3;
+}
+
+// 离开集群请求
+message LeaveClusterRequest {
+    string node_id = 1;
+    string cluster_id = 2;
+    bool graceful = 3;  // 优雅退出，转移数据
+}
+
+// 离开集群响应
+message LeaveClusterResponse {
+    bool success = 1;
+    string error = 2;
+}
+
+// 文件传输相关消息
+message FileChunk {
+    bytes data = 1;
+    int32 sequence = 2;
+    bool is_last = 3;
+}
+
+message FileTransferRequest {
+    string file_path = 1;
+    string transfer_id = 2;
+}
+
+message FileTransferResponse {
+    bool success = 1;
+    string message = 2;
+    string transfer_id = 3;
+    TransferStatus status = 4;
+}
+
+enum TransferStatus {
+    TRANSFER_UNKNOWN = 0;
+    TRANSFER_PENDING = 1;
+    TRANSFER_IN_PROGRESS = 2;
+    TRANSFER_COMPLETED = 3;
+    TRANSFER_FAILED = 4;
 } 

@@ -1,0 +1,18 @@
+# 节点配置
+node_id = "node1"
+name = "示例节点1"
+host = "127.0.0.1"
+port = 50051
+root_dir = "/tmp/librorum/node1"
+
+# 存储配置
+[storage]
+max_size_gb = 10
+backup_enabled = true
+backup_interval = 3600
+
+# 网络配置
+[network]
+max_connections = 100
+timeout = 30
+keepalive = true 
