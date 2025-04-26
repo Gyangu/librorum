@@ -5,7 +5,6 @@ use crate::proto::vdfs::{
     ListDirectoryRequest, GetFileInfoRequest, FileType,
 };
 use crate::error::Result;
-use tokio_stream::StreamExt;
 use futures::stream;
 
 pub struct VDFSClient {

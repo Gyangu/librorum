@@ -17,15 +17,25 @@ use tonic::{Request, Response, Status};
 pub struct VDFSServiceImpl {
     fs: Arc<dyn FileSystem>,
     metadata: Arc<RwLock<MetadataStore>>,
-    sync_manager: SyncManager,
+    sync_manager: Arc<SyncManager>,
 }
 
 impl VDFSServiceImpl {
     pub fn new(
         fs: Arc<dyn FileSystem>,
         metadata: Arc<RwLock<MetadataStore>>,
-        sync_manager: SyncManager,
+        sync_manager: Arc<SyncManager>,
     ) -> Self {
+        Self {
+            fs,
+            metadata,
+            sync_manager,
+        }
+    }
+
+    pub fn with_cluster_manager(fs: Arc<dyn FileSystem>, cluster_manager: ClusterManager) -> Self {
+        let metadata = Arc::new(RwLock::new(MetadataStore::new()));
+        let sync_manager = Arc::new(SyncManager::new(metadata.clone()));
         Self {
             fs,
             metadata,
@@ -98,45 +108,40 @@ impl VdfsService for VDFSServiceImpl {
         &self,
         request: Request<CreateFileRequest>,
     ) -> Result<Response<CreateFileResponse>, Status> {
-        let req = request.get_ref();
-        let file_type = match req.r#type {
-            1 => crate::fs::FileType::File,
-            2 => crate::fs::FileType::Directory,
-            3 => crate::fs::FileType::Symlink,
-            _ => crate::fs::FileType::Unknown,
-        };
+        let req = request.into_inner();
+        let path = req.path;
         
-        let info = self.fs.create_file(&req.path, file_type).await?;
+        // 创建文件
+        self.fs.create_file(&path).await.map_err(|e| Status::internal(e.to_string()))?;
         
-        Ok(Response::new(CreateFileResponse {
-            info: Some(FileInfo {
-                id: info.id,
-                name: info.name,
-                path: info.path.to_string_lossy().into_owned(),
-                r#type: match info.file_type {
-                    crate::fs::FileType::File => FileType::File as i32,
-                    crate::fs::FileType::Directory => FileType::Directory as i32,
-                    crate::fs::FileType::Symlink => FileType::Symlink as i32,
-                    crate::fs::FileType::Unknown => FileType::Unknown as i32,
-                },
-                size: info.size,
-                created_at: info.created_at.duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64,
-                modified_at: info.modified_at.duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64,
-                accessed_at: info.accessed_at.duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64,
-                owner_node: req.node_id.clone(),
-                available_nodes: vec![req.node_id.clone()],
-                attributes: info.attributes,
-            }),
-        }))
+        // 更新元数据
+        let mut metadata = self.metadata.write().await;
+        metadata.add_file(&path);
+        
+        // 同步元数据到其他节点
+        self.sync_manager.sync_metadata().await;
+        
+        Ok(Response::new(CreateFileResponse {}))
     }
 
     async fn delete_file(
         &self,
         request: Request<DeleteFileRequest>,
     ) -> Result<Response<DeleteFileResponse>, Status> {
-        self.fs.delete_file(&request.get_ref().path).await?;
+        let req = request.into_inner();
+        let path = req.path;
         
-        Ok(Response::new(DeleteFileResponse { success: true }))
+        // 删除文件
+        self.fs.delete_file(&path).await.map_err(|e| Status::internal(e.to_string()))?;
+        
+        // 更新元数据
+        let mut metadata = self.metadata.write().await;
+        metadata.remove_file(&path);
+        
+        // 同步元数据到其他节点
+        self.sync_manager.sync_metadata().await;
+        
+        Ok(Response::new(DeleteFileResponse {}))
     }
 
     async fn move_file(
@@ -164,44 +169,35 @@ impl VdfsService for VDFSServiceImpl {
     async fn read_file(
         &self,
         request: Request<ReadFileRequest>,
-    ) -> Result<Response<Self::ReadFileStream>, Status> {
-        let req = request.get_ref();
-        let (tx, rx) = tokio::sync::mpsc::channel(4);
+    ) -> Result<Response<ReadFileResponse>, Status> {
+        let req = request.into_inner();
+        let path = req.path;
         
-        let fs = self.fs.clone();
-        let path = req.path.clone();
-        let offset = req.offset;
-        let length = req.length as usize;
+        // 读取文件
+        let data = self.fs.read_file(&path).await.map_err(|e| Status::internal(e.to_string()))?;
         
-        tokio::spawn(async move {
-            match fs.read_file(&path, offset, length).await {
-                Ok(data) => {
-                    let _ = tx.send(Ok(ReadFileResponse { data })).await;
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(Status::internal(e.to_string()))).await;
-                }
-            }
-        });
-        
-        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(rx)))
+        Ok(Response::new(ReadFileResponse { data }))
     }
 
     async fn write_file(
         &self,
-        request: Request<tonic::Streaming<WriteFileRequest>>,
+        request: Request<WriteFileRequest>,
     ) -> Result<Response<WriteFileResponse>, Status> {
-        let mut stream = request.into_inner();
-        let mut total_bytes = 0;
+        let req = request.into_inner();
+        let path = req.path;
+        let data = req.data;
         
-        while let Some(req) = stream.message().await? {
-            let bytes_written = self.fs.write_file(&req.path, req.offset, &req.data).await?;
-            total_bytes += bytes_written;
-        }
+        // 写入文件
+        self.fs.write_file(&path, &data).await.map_err(|e| Status::internal(e.to_string()))?;
         
-        Ok(Response::new(WriteFileResponse {
-            bytes_written: total_bytes as i64,
-        }))
+        // 更新元数据
+        let mut metadata = self.metadata.write().await;
+        metadata.update_file(&path);
+        
+        // 同步元数据到其他节点
+        self.sync_manager.sync_metadata().await;
+        
+        Ok(Response::new(WriteFileResponse {}))
     }
 
     type SyncMetadataStream = tokio_stream::wrappers::ReceiverStream<Result<SyncMetadataResponse, Status>>;
@@ -209,43 +205,15 @@ impl VdfsService for VDFSServiceImpl {
     async fn sync_metadata(
         &self,
         request: Request<SyncMetadataRequest>,
-    ) -> Result<Response<Self::SyncMetadataStream>, Status> {
-        let (tx, rx) = tokio::sync::mpsc::channel(4);
+    ) -> Result<Response<SyncMetadataResponse>, Status> {
+        let req = request.into_inner();
+        let metadata_update = req.metadata;
         
-        let metadata = self.metadata.clone();
-        let node_id = request.get_ref().node_id.clone();
+        // 更新本地元数据
+        let mut metadata = self.metadata.write().await;
+        metadata.merge(metadata_update);
         
-        tokio::spawn(async move {
-            let files = metadata.read().await.get_files_by_node(&node_id);
-            let response = SyncMetadataResponse {
-                files: files.into_iter().map(|f| FileInfo {
-                    id: f.id.clone(),
-                    name: f.name.clone(),
-                    path: f.path.clone(),
-                    r#type: match f.file_type {
-                        crate::fs::FileType::File => FileType::File as i32,
-                        crate::fs::FileType::Directory => FileType::Directory as i32,
-                        crate::fs::FileType::Symlink => FileType::Symlink as i32,
-                        crate::fs::FileType::Unknown => FileType::Unknown as i32,
-                    },
-                    size: f.size,
-                    created_at: f.created_at.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64,
-                    modified_at: f.modified_at.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64,
-                    accessed_at: f.accessed_at.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64,
-                    owner_node: f.owner_node.clone(),
-                    available_nodes: f.available_nodes.clone(),
-                    attributes: f.attributes.clone(),
-                }).collect(),
-                sync_time: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64,
-            };
-            
-            let _ = tx.send(Ok(response)).await;
-        });
-        
-        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(rx)))
+        Ok(Response::new(SyncMetadataResponse {}))
     }
 
     async fn get_node_status(
@@ -401,5 +369,18 @@ impl VdfsService for VDFSServiceImpl {
             success: true,
             error: String::new(),
         }))
+    }
+
+    async fn list_files(
+        &self,
+        request: Request<ListFilesRequest>,
+    ) -> Result<Response<ListFilesResponse>, Status> {
+        let req = request.into_inner();
+        let path = req.path;
+        
+        // 列出目录下的文件
+        let files = self.fs.list_files(&path).await.map_err(|e| Status::internal(e.to_string()))?;
+        
+        Ok(Response::new(ListFilesResponse { files }))
     }
 } 

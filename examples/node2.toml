@@ -1,8 +1,0 @@
-id = "node2"
-name = "电脑B"
-host = "127.0.0.1"
-port = 50052
-root_dir = "./data/node2"
-max_file_size = 1073741824  # 1GB
-chunk_size = 1048576       # 1MB
-workers = 4 

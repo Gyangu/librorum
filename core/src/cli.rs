@@ -11,11 +11,11 @@ use crate::client::VDFSClient;
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    pub command: Commands,
 }
 
 #[derive(Subcommand)]
-enum Commands {
+pub enum Commands {
     /// Start a VDFS node
     Start {
         /// Path to the configuration file
@@ -71,15 +71,15 @@ enum Commands {
     },
     /// Write to a file
     WriteFile {
-        /// Path of the file to write
+        /// Path of the file to write to
         #[arg(short, long)]
         path: String,
         /// Node ID to write the file to
         #[arg(short, long)]
         node_id: String,
-        /// Content to write
+        /// Data to write
         #[arg(short, long)]
-        content: String,
+        data: String,
     },
     /// List directory contents
     ListDir {
@@ -176,10 +176,10 @@ impl Cli {
                 let content = client.read_file(path, node_id, offset, length).await?;
                 println!("File content: {}", String::from_utf8_lossy(&content));
             }
-            Commands::WriteFile { path, node_id, content } => {
+            Commands::WriteFile { path, node_id, data } => {
                 println!("Writing to file: {}", path);
                 let mut client = VDFSClient::new(format!("http://localhost:50051")).await?;
-                client.write_file(path, node_id, content.into_bytes()).await?;
+                client.write_file(path, node_id, data.into_bytes()).await?;
                 println!("File written successfully");
             }
             Commands::ListDir { path, node_id } => {

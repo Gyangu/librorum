@@ -1,7 +1,12 @@
 use tonic::{Request, Response, Status};
-use crate::fs::LocalFileSystem;
+use std::path::Path;
+use crate::fs::FileSystem;
+use crate::metadata::MetadataStore;
+use crate::sync::SyncManager;
+use crate::cluster::ClusterManager;
+use std::sync::Arc;
+use crate::proto::vdfs::vdfs_service_server::VdfsService;
 use crate::proto::vdfs::{
-    vdfs_service_server::VdfsService,
     CreateFileRequest, CreateFileResponse,
     DeleteFileRequest, DeleteFileResponse,
     ReadFileRequest, ReadFileResponse,
@@ -29,32 +34,47 @@ use crate::proto::vdfs::{
 use tokio_stream::wrappers::ReceiverStream;
 use tokio::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
 use chrono::Utc;
-use crate::cluster::ClusterManager;
+use tokio_stream::Stream;
+use std::pin::Pin;
+use crate::config::{ClusterConfig, NodeConfig};
+use tokio::sync::RwLock;
 
 pub struct VDFSServiceImpl {
-    fs: Arc<LocalFileSystem>,
-    nodes: Arc<Mutex<HashMap<String, NodeInfo>>>,
-    cluster_manager: Option<Arc<Mutex<ClusterManager>>>,
+    fs: Arc<dyn FileSystem>,
+    metadata_store: Arc<RwLock<MetadataStore>>,
+    sync_manager: Arc<SyncManager>,
+    cluster_manager: Arc<ClusterManager>,
 }
 
 impl VDFSServiceImpl {
-    pub fn new(fs: LocalFileSystem) -> Self {
+    pub fn new(
+        fs: Arc<dyn FileSystem>,
+        metadata_store: Arc<RwLock<MetadataStore>>,
+        sync_manager: Arc<SyncManager>,
+        cluster_manager: Arc<ClusterManager>,
+    ) -> Self {
         Self {
-            fs: Arc::new(fs),
-            nodes: Arc::new(Mutex::new(HashMap::new())),
-            cluster_manager: None,
+            fs,
+            metadata_store,
+            sync_manager,
+            cluster_manager,
         }
     }
-    
-    pub fn with_cluster_manager(fs: LocalFileSystem, cluster_manager: ClusterManager) -> Self {
-        Self {
-            fs: Arc::new(fs),
-            nodes: Arc::new(Mutex::new(HashMap::new())),
-            cluster_manager: Some(Arc::new(Mutex::new(cluster_manager))),
-        }
+
+    pub async fn with_cluster_manager(fs: Arc<dyn FileSystem>, cluster_manager: Arc<ClusterManager>) -> Result<Self, crate::error::Error> {
+        let metadata_store = Arc::new(RwLock::new(MetadataStore::new().await?));
+        let sync_manager = Arc::new(SyncManager::new(
+            metadata_store.clone(),
+            ClusterConfig::default(),
+            NodeConfig::default(),
+        ));
+        Ok(Self::new(
+            fs,
+            metadata_store,
+            sync_manager,
+            cluster_manager,
+        ))
     }
     
     fn get_current_timestamp() -> i64 {
@@ -70,9 +90,9 @@ impl VdfsService for VDFSServiceImpl {
     async fn create_file(
         &self,
         request: Request<CreateFileRequest>,
-    ) -> std::result::Result<Response<CreateFileResponse>, Status> {
+    ) -> Result<Response<CreateFileResponse>, Status> {
         let req = request.into_inner();
-        self.fs.create_file(&req.path)
+        self.fs.write_file(Path::new(&req.path), &[])
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
@@ -80,7 +100,7 @@ impl VdfsService for VDFSServiceImpl {
             id: uuid::Uuid::new_v4().to_string(),
             name: req.path.split('/').last().unwrap_or("").to_string(),
             path: req.path,
-            r#type: FileType::File as i32,
+            r#type: req.r#type,
             size: 0,
             created_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -107,7 +127,7 @@ impl VdfsService for VDFSServiceImpl {
         request: Request<CreateDirectoryRequest>,
     ) -> std::result::Result<Response<CreateDirectoryResponse>, Status> {
         let req = request.into_inner();
-        self.fs.create_dir(&req.path)
+        self.fs.create_dir(Path::new(&req.path))
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
@@ -140,43 +160,44 @@ impl VdfsService for VDFSServiceImpl {
     async fn delete_file(
         &self,
         request: Request<DeleteFileRequest>,
-    ) -> std::result::Result<Response<DeleteFileResponse>, Status> {
+    ) -> Result<Response<DeleteFileResponse>, Status> {
         let req = request.into_inner();
-        self.fs.delete_file(&req.path)
+        self.fs.delete_file(Path::new(&req.path))
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(DeleteFileResponse { success: true }))
     }
 
-    type ReadFileStream = ReceiverStream<std::result::Result<ReadFileResponse, Status>>;
+    type ReadFileStream = Pin<Box<dyn Stream<Item = Result<ReadFileResponse, Status>> + Send + 'static>>;
 
     async fn read_file(
         &self,
         request: Request<ReadFileRequest>,
-    ) -> std::result::Result<Response<Self::ReadFileStream>, Status> {
-        let (tx, rx) = mpsc::channel(4);
+    ) -> Result<Response<Self::ReadFileStream>, Status> {
         let req = request.into_inner();
-
-        let content = self.fs.read_file(&req.path)
+        let content = self.fs.read_file(Path::new(&req.path))
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
+
+        let (tx, rx) = mpsc::channel(4);
+        let response_stream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
 
         tokio::spawn(async move {
             tx.send(Ok(ReadFileResponse { data: content })).await.unwrap();
         });
 
-        Ok(Response::new(ReceiverStream::new(rx)))
+        Ok(Response::new(response_stream))
     }
 
     async fn write_file(
         &self,
         request: Request<tonic::Streaming<WriteFileRequest>>,
-    ) -> std::result::Result<Response<WriteFileResponse>, Status> {
+    ) -> Result<Response<WriteFileResponse>, Status> {
         let mut stream = request.into_inner();
         let mut bytes_written = 0;
 
         while let Some(req) = stream.message().await.map_err(|e| Status::internal(e.to_string()))? {
-            self.fs.write_file(&req.path, &req.data)
+            self.fs.write_file(Path::new(&req.path), &req.data)
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?;
             bytes_written += req.data.len() as i64;
@@ -188,25 +209,21 @@ impl VdfsService for VDFSServiceImpl {
     async fn list_directory(
         &self,
         request: Request<ListDirectoryRequest>,
-    ) -> std::result::Result<Response<ListDirectoryResponse>, Status> {
+    ) -> Result<Response<ListDirectoryResponse>, Status> {
         let req = request.into_inner();
-        let entries = self.fs.list_dir(&req.path)
+        let entries = self.fs.list_dir(Path::new(&req.path))
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
         let node_id = req.node_id.clone();
         let files = entries.into_iter()
             .map(|path| {
-                let name = path.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned();
                 FileInfo {
                     id: uuid::Uuid::new_v4().to_string(),
-                    name,
-                    path: path.to_string_lossy().into_owned(),
-                    r#type: if path.is_dir() { FileType::Directory as i32 } else { FileType::File as i32 },
-                    size: 0, // TODO: Get actual file size
+                    name: path.clone(),
+                    path: path,
+                    r#type: FileType::File as i32,
+                    size: 0,
                     created_at: SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap()
@@ -232,27 +249,20 @@ impl VdfsService for VDFSServiceImpl {
     async fn get_file_info(
         &self,
         request: Request<GetFileInfoRequest>,
-    ) -> std::result::Result<Response<GetFileInfoResponse>, Status> {
+    ) -> Result<Response<GetFileInfoResponse>, Status> {
         let req = request.into_inner();
-        let path = self.fs.get_path(&req.path);
-        
+        let metadata = self.metadata_store.read().await.get_file(&req.path)
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found("File not found"))?;
+
         let info = FileInfo {
             id: uuid::Uuid::new_v4().to_string(),
-            name: path.file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
+            name: metadata.name,
             path: req.path,
-            r#type: if path.is_dir() { FileType::Directory as i32 } else { FileType::File as i32 },
-            size: 0, // TODO: Get actual file size
-            created_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-            modified_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
+            r#type: FileType::File as i32,
+            size: metadata.size as i64,
+            created_at: metadata.created_at,
+            modified_at: metadata.modified_at,
             accessed_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -311,25 +321,19 @@ impl VdfsService for VDFSServiceImpl {
     ) -> std::result::Result<Response<GetNodeStatusResponse>, Status> {
         let req = request.into_inner();
         
-        // 尝试从节点列表中获取节点信息
-        let nodes = self.nodes.lock().map_err(|_| {
-            Status::internal("Failed to lock nodes map")
-        })?;
-        
-        // 如果找到节点，返回其信息，否则创建一个基本的节点信息
-        let node_info = nodes.get(&req.node_id).cloned().unwrap_or_else(|| {
-            NodeInfo {
-                id: req.node_id.clone(),
-                name: "Unknown".to_string(),
-                host: "127.0.0.1".to_string(),
-                port: 50051,
-                status: NodeStatus::NodeUnknown as i32,
-                last_seen: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64,
-            }
-        });
+        let node_info = self.cluster_manager.get_node(&req.node_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .unwrap_or_else(|| {
+                NodeInfo {
+                    id: req.node_id.clone(),
+                    name: "Unknown".to_string(),
+                    host: "127.0.0.1".to_string(),
+                    port: 50051,
+                    status: NodeStatus::NodeUnknown as i32,
+                    last_seen: Self::get_current_timestamp(),
+                }
+            });
 
         Ok(Response::new(GetNodeStatusResponse { status: Some(node_info) }))
     }
@@ -383,24 +387,9 @@ impl VdfsService for VDFSServiceImpl {
             Status::invalid_argument("Node info is required")
         })?;
 
-        // 优先使用集群管理器
-        if let Some(cluster_manager) = &self.cluster_manager {
-            let manager = cluster_manager.lock().map_err(|_| {
-                Status::internal("Failed to lock cluster manager")
-            })?;
-            
-            match manager.register_node(node_info.clone()) {
-                Ok(()) => {}
-                Err(e) => return Err(Status::internal(e)),
-            }
-        } else {
-            // 回退到简单的内存存储
-            let mut nodes = self.nodes.lock().map_err(|_| {
-                Status::internal("Failed to lock nodes map")
-            })?;
-            
-            nodes.insert(node_info.id.clone(), node_info.clone());
-        }
+        self.cluster_manager.add_node(node_info.clone())
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
 
         Ok(Response::new(RegisterNodeResponse {
             success: true,
@@ -413,32 +402,18 @@ impl VdfsService for VDFSServiceImpl {
         &self,
         _request: Request<GetClusterInfoRequest>,
     ) -> Result<Response<GetClusterInfoResponse>, Status> {
-        // 优先使用集群管理器
-        if let Some(cluster_manager) = &self.cluster_manager {
-            let manager = cluster_manager.lock().map_err(|_| {
-                Status::internal("Failed to lock cluster manager")
-            })?;
-            
-            let cluster_info = manager.get_cluster_info();
-            
-            Ok(Response::new(GetClusterInfoResponse {
-                cluster_info: Some(cluster_info),
-            }))
-        } else {
-            // 回退到简单的内存存储
-            let nodes = self.nodes.lock().map_err(|_| {
-                Status::internal("Failed to lock nodes map")
-            })?;
+        let nodes = self.cluster_manager.list_nodes()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
 
-            let cluster_info = ClusterInfo {
-                nodes: nodes.values().cloned().collect(),
-                last_updated: Utc::now().timestamp(),
-            };
+        let cluster_info = ClusterInfo {
+            nodes,
+            last_updated: Utc::now().timestamp(),
+        };
 
-            Ok(Response::new(GetClusterInfoResponse {
-                cluster_info: Some(cluster_info),
-            }))
-        }
+        Ok(Response::new(GetClusterInfoResponse {
+            cluster_info: Some(cluster_info),
+        }))
     }
 
     async fn update_node_status(
@@ -447,46 +422,17 @@ impl VdfsService for VDFSServiceImpl {
     ) -> Result<Response<UpdateNodeStatusResponse>, Status> {
         let request = request.into_inner();
         
-        // 优先使用集群管理器
-        if let Some(cluster_manager) = &self.cluster_manager {
-            let manager = cluster_manager.lock().map_err(|_| {
-                Status::internal("Failed to lock cluster manager")
-            })?;
-            
-            match manager.update_node_status(&request.node_id, 
-                                            NodeStatus::NodeUnknown, 
-                                            request.last_seen) {
-                Ok(()) => {
-                    Ok(Response::new(UpdateNodeStatusResponse {
-                        success: true,
-                        error: String::new(),
-                    }))
-                }
-                Err(e) => {
-                    Ok(Response::new(UpdateNodeStatusResponse {
-                        success: false,
-                        error: e,
-                    }))
-                }
-            }
-        } else {
-            // 回退到简单的内存存储
-            let mut nodes = self.nodes.lock().map_err(|_| {
-                Status::internal("Failed to lock nodes map")
-            })?;
-
-            if let Some(node_info) = nodes.get_mut(&request.node_id) {
-                node_info.status = request.status;
-                node_info.last_seen = request.last_seen;
-
+        match self.cluster_manager.update_node_status(&request.node_id, NodeStatus::NodeUnknown).await {
+            Ok(()) => {
                 Ok(Response::new(UpdateNodeStatusResponse {
                     success: true,
                     error: String::new(),
                 }))
-            } else {
+            }
+            Err(e) => {
                 Ok(Response::new(UpdateNodeStatusResponse {
                     success: false,
-                    error: format!("Node {} not found", request.node_id),
+                    error: e.to_string(),
                 }))
             }
         }
@@ -498,40 +444,19 @@ impl VdfsService for VDFSServiceImpl {
     ) -> Result<Response<DiscoverNodesResponse>, Status> {
         let req = request.into_inner();
         
-        // 优先使用集群管理器进行节点发现
-        if let Some(cluster_manager) = &self.cluster_manager {
-            let manager = cluster_manager.lock().map_err(|_| {
-                Status::internal("Failed to lock cluster manager")
-            })?;
-            
-            let nodes = manager.get_all_nodes();
-            
-            // 过滤掉请求节点自身
-            let filtered_nodes: Vec<NodeInfo> = nodes.into_iter()
-                .filter(|n| n.id != req.node_id)
-                .take(req.max_nodes as usize)
-                .collect();
-            
-            Ok(Response::new(DiscoverNodesResponse {
-                nodes: filtered_nodes,
-            }))
-        } else {
-            // 回退到简单内存存储
-            let nodes = self.nodes.lock().map_err(|_| {
-                Status::internal("Failed to lock nodes map")
-            })?;
-            
-            // 过滤掉请求节点自身
-            let filtered_nodes: Vec<NodeInfo> = nodes.values()
-                .filter(|n| n.id != req.node_id)
-                .take(req.max_nodes as usize)
-                .cloned()
-                .collect();
-            
-            Ok(Response::new(DiscoverNodesResponse {
-                nodes: filtered_nodes,
-            }))
-        }
+        let nodes = self.cluster_manager.list_nodes()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        
+        // 过滤掉请求节点自身
+        let filtered_nodes: Vec<NodeInfo> = nodes.into_iter()
+            .filter(|n| n.id != req.node_id)
+            .take(req.max_nodes as usize)
+            .collect();
+        
+        Ok(Response::new(DiscoverNodesResponse {
+            nodes: filtered_nodes,
+        }))
     }
     
     async fn heartbeat(
@@ -541,40 +466,13 @@ impl VdfsService for VDFSServiceImpl {
         let req = request.into_inner();
         
         // 更新节点状态
-        let node_id = req.node_id.clone();
-        let status = NodeStatus::NodeUnknown;
+        let _ = self.cluster_manager.update_node_status(&req.node_id, NodeStatus::NodeUnknown).await;
         
-        // 优先使用集群管理器
-        if let Some(cluster_manager) = &self.cluster_manager {
-            let manager = cluster_manager.lock().map_err(|_| {
-                Status::internal("Failed to lock cluster manager")
-            })?;
-            
-            // 尝试更新状态，如果节点不存在则忽略错误
-            let _ = manager.update_node_status(&node_id, status, req.timestamp);
-            
-            Ok(Response::new(HeartbeatResponse {
-                acknowledged: true,
-                server_timestamp: Self::get_current_timestamp(),
-                cluster_id: manager.config.id.clone(),
-            }))
-        } else {
-            // 回退到简单内存存储
-            let mut nodes = self.nodes.lock().map_err(|_| {
-                Status::internal("Failed to lock nodes map")
-            })?;
-            
-            if let Some(node_info) = nodes.get_mut(&node_id) {
-                node_info.status = req.status;
-                node_info.last_seen = req.timestamp;
-            }
-            
-            Ok(Response::new(HeartbeatResponse {
-                acknowledged: true,
-                server_timestamp: Self::get_current_timestamp(),
-                cluster_id: "default".to_string(),
-            }))
-        }
+        Ok(Response::new(HeartbeatResponse {
+            acknowledged: true,
+            server_timestamp: Self::get_current_timestamp(),
+            cluster_id: "default".to_string(),
+        }))
     }
     
     async fn join_cluster(
@@ -586,46 +484,30 @@ impl VdfsService for VDFSServiceImpl {
             Status::invalid_argument("Node info is required")
         })?;
         
-        // 必须有集群管理器才能加入集群
-        if let Some(cluster_manager) = &self.cluster_manager {
-            let manager = cluster_manager.lock().map_err(|_| {
-                Status::internal("Failed to lock cluster manager")
-            })?;
-            
-            // 检查 join_token 如果有设置
-            if let Some(expected_token) = &manager.config.join_token {
-                if req.join_token != *expected_token {
-                    return Ok(Response::new(JoinClusterResponse {
-                        success: false,
-                        error: "Invalid join token".to_string(),
-                        cluster_info: None,
-                    }));
-                }
+        match self.cluster_manager.add_node(node_info.clone()).await {
+            Ok(()) => {
+                let nodes = self.cluster_manager.list_nodes()
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?;
+                
+                let cluster_info = ClusterInfo {
+                    nodes,
+                    last_updated: Utc::now().timestamp(),
+                };
+                
+                Ok(Response::new(JoinClusterResponse {
+                    success: true,
+                    error: String::new(),
+                    cluster_info: Some(cluster_info),
+                }))
             }
-            
-            // 注册节点
-            match manager.register_node(node_info) {
-                Ok(()) => {
-                    Ok(Response::new(JoinClusterResponse {
-                        success: true,
-                        error: String::new(),
-                        cluster_info: Some(manager.get_cluster_info()),
-                    }))
-                }
-                Err(e) => {
-                    Ok(Response::new(JoinClusterResponse {
-                        success: false,
-                        error: e,
-                        cluster_info: None,
-                    }))
-                }
+            Err(e) => {
+                Ok(Response::new(JoinClusterResponse {
+                    success: false,
+                    error: e.to_string(),
+                    cluster_info: None,
+                }))
             }
-        } else {
-            Ok(Response::new(JoinClusterResponse {
-                success: false,
-                error: "Cluster manager not initialized".to_string(),
-                cluster_info: None,
-            }))
         }
     }
     
@@ -635,42 +517,17 @@ impl VdfsService for VDFSServiceImpl {
     ) -> Result<Response<LeaveClusterResponse>, Status> {
         let req = request.into_inner();
         
-        // 必须有集群管理器才能离开集群
-        if let Some(cluster_manager) = &self.cluster_manager {
-            let manager = cluster_manager.lock().map_err(|_| {
-                Status::internal("Failed to lock cluster manager")
-            })?;
-            
-            // 移除节点
-            match manager.remove_node(&req.node_id) {
-                Ok(()) => {
-                    Ok(Response::new(LeaveClusterResponse {
-                        success: true,
-                        error: String::new(),
-                    }))
-                }
-                Err(e) => {
-                    Ok(Response::new(LeaveClusterResponse {
-                        success: false,
-                        error: e,
-                    }))
-                }
-            }
-        } else {
-            // 回退到简单内存存储
-            let mut nodes = self.nodes.lock().map_err(|_| {
-                Status::internal("Failed to lock nodes map")
-            })?;
-            
-            if nodes.remove(&req.node_id).is_some() {
+        match self.cluster_manager.remove_node(&req.node_id).await {
+            Ok(()) => {
                 Ok(Response::new(LeaveClusterResponse {
                     success: true,
                     error: String::new(),
                 }))
-            } else {
+            }
+            Err(e) => {
                 Ok(Response::new(LeaveClusterResponse {
                     success: false,
-                    error: format!("Node {} not found", req.node_id),
+                    error: e.to_string(),
                 }))
             }
         }

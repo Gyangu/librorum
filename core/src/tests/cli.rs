@@ -4,6 +4,9 @@ use std::path::PathBuf;
 use tokio::process::Command;
 use std::time::Duration;
 use tokio::time::sleep;
+use tempfile::tempdir;
+use clap::Parser;
+use crate::cli::Commands;
 
 #[tokio::test]
 async fn test_cli_commands() {
@@ -67,4 +70,38 @@ async fn test_cli_commands() {
 
     // Stop the server
     server_handle.abort();
+}
+
+#[tokio::test]
+async fn test_cli_basic() {
+    // 创建临时目录
+    let temp_dir = tempdir().unwrap();
+    let config_path = temp_dir.path().join("config.toml");
+
+    // 测试启动命令
+    let cli = Cli::parse_from(&["vdfs", "start", "-c", config_path.to_str().unwrap()]);
+    match cli.command {
+        Commands::Start { config } => {
+            assert_eq!(config.unwrap(), config_path);
+        }
+        _ => panic!("Expected Start command"),
+    }
+
+    // 测试停止命令
+    let cli = Cli::parse_from(&["vdfs", "stop", "-n", "test_node"]);
+    match cli.command {
+        Commands::Stop { node_id } => {
+            assert_eq!(node_id, "test_node");
+        }
+        _ => panic!("Expected Stop command"),
+    }
+
+    // 测试状态命令
+    let cli = Cli::parse_from(&["vdfs", "status", "-n", "test_node"]);
+    match cli.command {
+        Commands::Status { node_id } => {
+            assert_eq!(node_id, "test_node");
+        }
+        _ => panic!("Expected Status command"),
+    }
 } 

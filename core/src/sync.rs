@@ -1,16 +1,26 @@
 use crate::config::{ClusterConfig, NodeConfig};
-use crate::metadata::{MetadataStore, NodeStatus};
+use crate::metadata::{MetadataStore, NodeStatus, FileType};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{self, Duration};
-use crate::error::Result;
+use crate::error::{Result, Error};
 use crate::proto::vdfs::FileInfo;
 use chrono::Utc;
+use tokio::sync::Mutex;
 
 pub struct SyncManager {
     metadata_store: Arc<RwLock<MetadataStore>>,
     config: ClusterConfig,
     node_config: NodeConfig,
+    sync_queue: Arc<Mutex<Vec<SyncTask>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SyncTask {
+    pub file_path: String,
+    pub source_node: String,
+    pub target_node: String,
+    pub priority: u32,
 }
 
 impl SyncManager {
@@ -23,6 +33,7 @@ impl SyncManager {
             metadata_store,
             config,
             node_config,
+            sync_queue: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -43,7 +54,28 @@ impl SyncManager {
 
     pub async fn list_files(&self) -> Result<Vec<FileInfo>> {
         let metadata_store = self.metadata_store.read().await;
-        metadata_store.list_files().await
+        let files = metadata_store.list_files().await?;
+        
+        Ok(files.into_iter().map(|(path, file)| {
+            FileInfo {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: file.name,
+                path,
+                r#type: match file.file_type {
+                    FileType::File => 1,
+                    FileType::Directory => 2,
+                    FileType::Symlink => 3,
+                    FileType::Unknown => 0,
+                },
+                size: file.size as i64,
+                created_at: file.created_at,
+                modified_at: file.modified_at,
+                accessed_at: file.accessed_at,
+                owner_node: file.owner_node,
+                available_nodes: file.available_nodes,
+                attributes: file.attributes,
+            }
+        }).collect())
     }
 
     pub async fn list_nodes(&self) -> Result<Vec<NodeStatus>> {
@@ -104,7 +136,7 @@ impl SyncManager {
     pub async fn drop_file(&self, file_id: &str, target_node: &str) -> Result<()> {
         let mut metadata = self.metadata_store.write().await;
         
-        if let Some(file) = metadata.get_file(file_id) {
+        if let Ok(Some(file)) = metadata.get_file(file_id) {
             if file.owner_node != self.node_config.id {
                 return Err(crate::error::VDFSError::NodeError(
                     "文件不属于当前节点".to_string()
@@ -119,9 +151,104 @@ impl SyncManager {
             // 更新文件元数据
             let mut new_metadata = file.clone();
             new_metadata.available_nodes.push(target_node.to_string());
-            metadata.update_file(new_metadata);
+            let file_info = FileInfo {
+                id: new_metadata.id,
+                name: new_metadata.name,
+                path: new_metadata.path,
+                r#type: match new_metadata.file_type {
+                    FileType::File => 1,
+                    FileType::Directory => 2,
+                    FileType::Symlink => 3,
+                    FileType::Unknown => 0,
+                },
+                size: new_metadata.size as i64,
+                created_at: new_metadata.created_at,
+                modified_at: new_metadata.modified_at,
+                accessed_at: new_metadata.accessed_at,
+                owner_node: new_metadata.owner_node,
+                available_nodes: new_metadata.available_nodes,
+                attributes: new_metadata.attributes,
+            };
+            metadata.update_file_info(file_info).await?;
         }
 
+        Ok(())
+    }
+
+    pub async fn add_sync_task(&self, task: SyncTask) -> Result<()> {
+        let mut queue = self.sync_queue.lock().await;
+        queue.push(task);
+        Ok(())
+    }
+
+    pub async fn get_next_task(&self) -> Option<SyncTask> {
+        let mut queue = self.sync_queue.lock().await;
+        queue.pop()
+    }
+
+    pub async fn sync_file(&self, file_path: &str, source_node: &str, target_node: &str) -> Result<()> {
+        let metadata = self.metadata_store.read().await;
+        let _file = metadata.get_file(file_path)?
+            .ok_or_else(|| Error::FileSystem(format!("File not found: {}", file_path)))?;
+
+        // 创建同步任务
+        let task = SyncTask {
+            file_path: file_path.to_string(),
+            source_node: source_node.to_string(),
+            target_node: target_node.to_string(),
+            priority: 1,
+        };
+
+        // 添加到同步队列
+        self.add_sync_task(task).await?;
+
+        Ok(())
+    }
+
+    pub async fn get_sync_status(&self, file_path: &str) -> Result<Vec<String>> {
+        let metadata = self.metadata_store.read().await;
+        let file = metadata.get_file(file_path)?
+            .ok_or_else(|| Error::FileSystem(format!("File not found: {}", file_path)))?;
+
+        Ok(file.available_nodes.clone())
+    }
+
+    pub async fn list_files_to_sync(&self, node_id: &str) -> Result<Vec<FileInfo>> {
+        let metadata = self.metadata_store.read().await;
+        let files = metadata.list_files().await?;
+
+        let mut sync_files = Vec::new();
+        for (path, file) in files {
+            if !file.available_nodes.contains(&node_id.to_string()) {
+                sync_files.push(FileInfo {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    name: file.name,
+                    path,
+                    r#type: match file.file_type {
+                        FileType::File => 1,
+                        FileType::Directory => 2,
+                        FileType::Symlink => 3,
+                        FileType::Unknown => 0,
+                    },
+                    size: file.size as i64,
+                    created_at: file.created_at,
+                    modified_at: file.modified_at,
+                    accessed_at: file.accessed_at,
+                    owner_node: file.owner_node,
+                    available_nodes: file.available_nodes,
+                    attributes: file.attributes,
+                });
+            }
+        }
+
+        Ok(sync_files)
+    }
+
+    pub async fn process_sync_queue(&self) -> Result<()> {
+        while let Some(task) = self.get_next_task().await {
+            // 处理同步任务
+            self.sync_file(&task.file_path, &task.source_node, &task.target_node).await?;
+        }
         Ok(())
     }
 } 

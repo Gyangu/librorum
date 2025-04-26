@@ -7,6 +7,12 @@ pub mod cluster;
 pub mod discovery;
 pub mod cli;
 pub mod client;
+pub mod metadata;
+pub mod sync;
+#[cfg(test)]
+mod tests {
+    mod config_test;
+}
 
 pub use fs::LocalFileSystem;
 pub use service::VDFSServiceImpl;
@@ -17,6 +23,7 @@ pub use error::Error;
 pub use cli::Cli;
 pub use client::VDFSClient;
 
+use std::sync::Arc;
 use tonic::transport::Server;
 use proto::vdfs::vdfs_service_server::VdfsServiceServer;
 
@@ -25,7 +32,7 @@ pub async fn start_server(
     addr: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 创建文件系统
-    let fs = LocalFileSystem::new(&config.root_dir).await?;
+    let fs = Arc::new(LocalFileSystem::new(&config.root_dir).await?);
     
     // 创建节点信息
     let node_info = proto::vdfs::NodeInfo {
@@ -41,10 +48,10 @@ pub async fn start_server(
     let cluster_config = cluster::ClusterConfig::default();
     
     // 创建集群管理器
-    let cluster_manager = ClusterManager::new(cluster_config, node_info.clone());
+    let cluster_manager = Arc::new(ClusterManager::new(cluster_config, node_info.clone()));
     
     // 创建服务实现
-    let service = VDFSServiceImpl::with_cluster_manager(fs.clone(), cluster_manager);
+    let service = VDFSServiceImpl::with_cluster_manager(fs, cluster_manager).await?;
     
     // 创建服务器
     let addr = addr.parse().map_err(|e| 

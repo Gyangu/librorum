@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use sqlx::SqlitePool;
 use crate::error::Result;
 use crate::proto::vdfs::FileInfo;
@@ -18,6 +18,7 @@ pub struct FileMetadata {
     pub owner_node: String,
     pub available_nodes: Vec<String>,
     pub attributes: HashMap<String, String>,
+    pub chunks: Vec<ChunkInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,20 +39,27 @@ pub struct NodeStatus {
     pub is_online: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkInfo {
+    pub id: String,
+    pub size: u64,
+    pub nodes: Vec<String>,
+}
+
 pub struct MetadataStore {
     pool: Arc<SqlitePool>,
-    files: HashMap<String, FileMetadata>,
+    files: Arc<Mutex<HashMap<String, FileMetadata>>>,
     nodes: HashMap<String, NodeStatus>,
 }
 
 impl MetadataStore {
-    pub fn new(pool: SqlitePool) -> Self {
-        Self {
+    pub async fn new() -> Result<Self> {
+        let pool = SqlitePool::connect("sqlite::memory:").await?;
+        Ok(Self {
             pool: Arc::new(pool),
-            files: HashMap::new(),
+            files: Arc::new(Mutex::new(HashMap::new())),
             nodes: HashMap::new(),
-        }
+        })
     }
 
     pub async fn init(&self) -> Result<()> {
@@ -74,7 +82,7 @@ impl MetadataStore {
         )
         .execute(&*self.pool)
         .await
-        .map_err(|e| crate::error::VDFSError::Database(e))?;
+        .map_err(|e| crate::error::VDFSError::Database(e.to_string()))?;
 
         sqlx::query(
             r#"
@@ -90,7 +98,7 @@ impl MetadataStore {
         )
         .execute(&*self.pool)
         .await
-        .map_err(|e| crate::error::VDFSError::Database(e))?;
+        .map_err(|e| crate::error::VDFSError::Database(e.to_string()))?;
 
         sqlx::query(
             r#"
@@ -101,7 +109,7 @@ impl MetadataStore {
         )
         .execute(&*self.pool)
         .await
-        .map_err(|e| crate::error::VDFSError::Database(e))?;
+        .map_err(|e| crate::error::VDFSError::Database(e.to_string()))?;
 
         Ok(())
     }
@@ -126,7 +134,7 @@ impl MetadataStore {
         .bind(status.is_online)
         .execute(&*self.pool)
         .await
-        .map_err(|e| crate::error::VDFSError::Database(e))?;
+        .map_err(|e| crate::error::VDFSError::Database(e.to_string()))?;
 
         self.nodes.insert(node_id.to_string(), status);
         Ok(())
@@ -150,53 +158,37 @@ impl MetadataStore {
             owner_node: file_info.owner_node,
             available_nodes: file_info.available_nodes,
             attributes: file_info.attributes,
+            chunks: Vec::new(),
         };
 
-        self.add_file(metadata);
+        self.add_file(metadata.path.clone(), metadata).await?;
         Ok(())
     }
 
-    pub async fn list_files(&self) -> Result<Vec<FileInfo>> {
-        let files = self.files.values().map(|f| FileInfo {
-            id: f.id.clone(),
-            name: f.name.clone(),
-            path: f.path.clone(),
-            r#type: match f.file_type {
-                FileType::File => 1,
-                FileType::Directory => 2,
-                FileType::Symlink => 3,
-                FileType::Unknown => 0,
-            },
-            size: f.size as i64,
-            created_at: f.created_at,
-            modified_at: f.modified_at,
-            accessed_at: f.accessed_at,
-            owner_node: f.owner_node.clone(),
-            available_nodes: f.available_nodes.clone(),
-            attributes: f.attributes.clone(),
-        }).collect();
-
-        Ok(files)
+    pub async fn list_files(&self) -> Result<Vec<(String, FileMetadata)>> {
+        let files = self.files.lock().unwrap();
+        Ok(files.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
     }
 
     pub async fn list_nodes(&self) -> Result<Vec<NodeStatus>> {
         Ok(self.nodes.values().cloned().collect())
     }
 
-    pub fn add_file(&mut self, metadata: FileMetadata) {
-        self.files.insert(metadata.id.clone(), metadata);
+    pub async fn add_file(&self, path: String, metadata: FileMetadata) -> Result<()> {
+        let mut files = self.files.lock().unwrap();
+        files.insert(path, metadata);
+        Ok(())
     }
 
-    pub fn get_file(&self, id: &str) -> Option<&FileMetadata> {
-        self.files.get(id)
+    pub fn get_file(&self, path: &str) -> Result<Option<FileMetadata>> {
+        let files = self.files.lock().unwrap();
+        Ok(files.get(path).cloned())
     }
 
-    pub fn update_file(&mut self, metadata: FileMetadata) {
-        self.files.insert(metadata.id.clone(), metadata);
-    }
-
-    pub fn remove_file(&mut self, id: &str) {
-        self.files.remove(id);
+    pub fn remove_file(&self, path: &str) -> Result<()> {
+        let mut files = self.files.lock().unwrap();
+        files.remove(path);
+        Ok(())
     }
 
     pub fn add_node(&mut self, status: NodeStatus) {
@@ -215,17 +207,19 @@ impl MetadataStore {
         self.nodes.remove(id);
     }
 
-    pub fn get_files_by_node(&self, node_id: &str) -> Vec<&FileMetadata> {
-        self.files
+    pub fn get_files_by_node(&self, node_id: &str) -> Vec<FileMetadata> {
+        self.files.lock().unwrap()
             .values()
             .filter(|f| f.owner_node == node_id)
+            .cloned()
             .collect()
     }
 
-    pub fn get_available_files(&self) -> Vec<&FileMetadata> {
-        self.files
+    pub fn get_available_files(&self) -> Vec<FileMetadata> {
+        self.files.lock().unwrap()
             .values()
             .filter(|f| !f.available_nodes.is_empty())
+            .cloned()
             .collect()
     }
 } 

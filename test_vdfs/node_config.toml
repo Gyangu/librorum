@@ -1,9 +1,0 @@
-[node]
-id = "test-node-1"
-name = "test-node"
-host = "127.0.0.1"
-port = 50051
-root_dir = "test_vdfs/data"
-max_file_size = 1073741824  # 1GB
-chunk_size = 1048576        # 1MB
-workers = 4 
