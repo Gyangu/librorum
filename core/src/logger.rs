@@ -7,6 +7,7 @@ use std::io::{self, BufReader, BufRead};
 use std::fs::File;
 use std::sync::Once;
 use std::sync::atomic::{AtomicBool, Ordering};
+use glob;
 
 // 确保日志只初始化一次
 static INIT: Once = Once::new();
@@ -219,4 +220,49 @@ pub fn clean_old_logs(days: u64) -> Result<usize> {
     }
     
     Ok(removed)
+}
+
+/// 查看最近的日志
+pub fn view_recent_logs(tail: usize) -> Result<String> {
+    let log_dir = log_dir_path();
+    let log_pattern = format!("{}/*.log", log_dir.display());
+    
+    // 查找所有日志文件
+    let mut log_files = Vec::new();
+    for entry in glob::glob(&log_pattern)? {
+        if let Ok(path) = entry {
+            log_files.push(path);
+        }
+    }
+    
+    // 按修改时间排序，最新的放前面
+    log_files.sort_by(|a, b| {
+        let a_metadata = fs::metadata(a).unwrap();
+        let b_metadata = fs::metadata(b).unwrap();
+        b_metadata.modified().unwrap().cmp(&a_metadata.modified().unwrap())
+    });
+    
+    // 如果没有日志文件，返回空结果
+    if log_files.is_empty() {
+        return Ok("没有找到日志文件".to_string());
+    }
+    
+    // 读取最新的日志文件
+    let latest_log = &log_files[0];
+    let file = File::open(latest_log)?;
+    let reader = BufReader::new(file);
+    
+    // 读取所有行
+    let mut lines = Vec::new();
+    for line in reader.lines() {
+        if let Ok(line) = line {
+            lines.push(line);
+        }
+    }
+    
+    // 返回最后的N行
+    let start = if lines.len() > tail { lines.len() - tail } else { 0 };
+    let result = lines[start..].join("\n");
+    
+    Ok(result)
 } 

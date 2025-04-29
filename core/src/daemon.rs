@@ -1,957 +1,569 @@
 use crate::config::NodeConfig;
 use crate::logger;
-use anyhow::{anyhow, Context, Result};
-use std::fs::{self, File};
+use anyhow::{Result, Context};
+use libc;
+use std::env;
+use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Duration;
-use std::{env, thread};
+
+#[cfg(all(unix, feature = "daemon-unix"))]
+use daemonize::Daemonize;
+
+#[cfg(all(windows, feature = "windows_service"))]
+use std::ffi::OsString;
+#[cfg(all(windows, feature = "windows_service"))]
+use windows_service::{
+    define_windows_service,
+    service::{
+        Service, ServiceAccess, ServiceAction, ServiceControl, ServiceControlAccept,
+        ServiceErrorControl, ServiceInfo, ServiceManager, ServiceStartType, ServiceState,
+        ServiceStatus, ServiceType,
+    },
+    service_control_handler::{self, ServiceControlHandlerResult, ServiceStatusHandle},
+    service_dispatcher,
+    service_manager::{ServiceManagerAccess, ServiceManagerOpenOptions},
+};
+
+/// PID 文件目录
+pub fn pid_dir_path() -> PathBuf {
+    #[cfg(not(windows))]
+    {
+        if let Some(data_dir) = dirs::data_dir() {
+            data_dir.join("librorum")
+        } else {
+            PathBuf::from("/tmp/librorum")
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(data_dir) = dirs::data_dir() {
+            data_dir.join("librorum")
+        } else {
+            let mut path = PathBuf::new();
+            path.push("C:");
+            path.push("ProgramData");
+            path.push("librorum");
+            path
+        }
+    }
+}
 
 /// PID 文件路径
 pub fn pid_file_path() -> PathBuf {
-    let path = if let Some(data_dir) = dirs::data_dir() {
-        let dir = data_dir.join("librorum");
-        // 确保目录存在
-        if !dir.exists() {
-            println!("创建PID文件目录: {:?}", dir);
-            if let Err(e) = std::fs::create_dir_all(&dir) {
-                tracing::warn!("无法创建 PID 文件目录: {:?} 错误: {}", dir, e);
-                println!("无法创建 PID 文件目录: {:?} 错误: {}", dir, e);
-            } else {
-                tracing::debug!("已创建 PID 文件目录: {:?}", dir);
-                println!("已创建 PID 文件目录: {:?}", dir);
-            }
+    pid_dir_path().join("librorum.pid")
+}
+
+/// 获取可执行文件路径
+fn get_executable_path() -> Result<PathBuf> {
+    let exe = env::current_exe().with_context(|| "无法获取当前可执行文件路径")?;
+    Ok(exe)
+}
+
+// Windows 服务相关常量
+#[cfg(all(windows, feature = "windows_service"))]
+const SERVICE_NAME: &str = "librorum";
+#[cfg(all(windows, feature = "windows_service"))]
+const SERVICE_DISPLAY_NAME: &str = "Librorum 分布式文件系统";
+#[cfg(all(windows, feature = "windows_service"))]
+const SERVICE_DESCRIPTION: &str = "Librorum 分布式文件系统服务";
+
+// Windows 服务主入口点
+#[cfg(all(windows, feature = "windows_service"))]
+define_windows_service!(ffi_service_main, service_main);
+
+#[cfg(all(windows, feature = "windows_service"))]
+fn service_main(_arguments: Vec<OsString>) {
+    // 创建服务控制处理器
+    let event_handler = move |control_event| -> ServiceControlHandlerResult {
+        match control_event {
+            // 关闭服务
+            ServiceControl::Stop => ServiceControlHandlerResult::NoError,
+            // 其他控制命令，不处理
+            _ => ServiceControlHandlerResult::NotImplemented,
         }
-        dir.join("librorum.pid")
-    } else {
-        PathBuf::from("/tmp/librorum.pid")
     };
-    
-    tracing::debug!("PID 文件路径: {:?}", path);
-    println!("PID 文件路径: {:?}", path);
-    path
+
+    let status_handle = match service_control_handler::register(SERVICE_NAME, event_handler) {
+        Ok(handle) => handle,
+        Err(e) => {
+            tracing::error!("无法注册服务控制处理器: {:?}", e);
+            return;
+        }
+    };
+
+    // 设置服务状态为运行中
+    let next_status = ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::Running,
+        controls_accepted: ServiceControlAccept::STOP,
+        exit_code: 0,
+        checkpoint: 0,
+        wait_hint: 0,
+        process_id: None,
+    };
+
+    if let Err(e) = status_handle.set_service_status(next_status) {
+        tracing::error!("无法设置服务状态: {:?}", e);
+        return;
+    }
+
+    // 在这里启动实际的服务代码
+    // 实际上这会被 run_service 函数调用，这里不需要特别处理
 }
 
-/// 检查服务是否已运行
-pub fn is_running() -> bool {
-    let pid_file = pid_file_path();
-    
-    tracing::debug!("检查服务状态，PID文件: {:?}", pid_file);
-    
-    // 首先检查进程是否在运行，即使PID文件不存在
-    #[cfg(not(windows))]
-    {
-        // 使用ps命令查找运行中的librorum守护进程
-        let ps_cmd = "ps -ef | grep '[l]ibrorum.*run.*--daemon' | grep -v grep | awk '{print $2}'";
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(ps_cmd)
-            .output();
-            
-        match output {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let pids = stdout.trim();
-                let exists = !pids.is_empty();
-                tracing::debug!("ps查找结果: {}，找到的PID: '{}'", exists, pids);
-                
-                if exists {
-                    // 显示进程详情
-                    let detail_cmd = format!("ps -p {} -o pid,ppid,command", pids);
-                    let detail_output = Command::new("sh")
-                        .arg("-c")
-                        .arg(&detail_cmd)
-                        .output();
-                        
-                    if let Ok(detail) = detail_output {
-                        let detail_stdout = String::from_utf8_lossy(&detail.stdout);
-                        tracing::debug!("进程详情:\n{}", detail_stdout);
-                    }
-                    
-                    // 更新PID文件
-                    if !pid_file.exists() {
-                        if let Err(e) = std::fs::write(&pid_file, pids) {
-                            tracing::warn!("无法更新PID文件: {}", e);
-                        } else {
-                            tracing::info!("已创建PID文件: {:?}, 内容: {}", pid_file, pids);
-                        }
-                    }
-                    
-                    return true;
-                }
-            }
-            Err(e) => {
-                tracing::warn!("ps检查失败: {}", e);
-            }
-        }
-    }
-    
-    #[cfg(windows)]
-    {
-        // 在Windows上查找librorum进程
-        let output = Command::new("powershell")
-            .arg("-Command")
-            .arg("Get-Process -Name 'librorum' -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count")
-            .output();
-        
-        match output {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let count = stdout.trim();
-                let exists = count != "0";
-                tracing::debug!("Windows进程检查结果: {}，找到{}个进程", exists, count);
-                
-                if exists {
-                    return true;
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Windows进程检查失败: {}", e);
-            }
-        }
-    }
-    
-    // 如果通过进程检查失败，再检查PID文件
-    if pid_file.exists() {
-        if let Ok(pid_str) = fs::read_to_string(&pid_file) {
-            let clean_pid_str = pid_str.trim().replace("%", "");
-            tracing::debug!("从PID文件读取内容: '{}' (清理后: '{}')", pid_str, clean_pid_str);
-            
-            // 检查是否是时间戳形式的临时PID (通常是大于10位的数字)
-            let timestamp_check = match clean_pid_str.parse::<u64>() {
-                Ok(n) if n > 1000000000 && clean_pid_str.len() >= 10 => true,
-                _ => false
-            };
-                
-            if timestamp_check {
-                tracing::debug!("检测到时间戳形式的临时PID: {}", clean_pid_str);
-                return is_process_running_by_pattern("librorum.*run.*--daemon");
-            }
-            
-            // 常规PID检查
-            if let Ok(pid) = clean_pid_str.parse::<u32>() {
-                tracing::debug!("检查进程状态，PID: {} (原始文本: '{}')", pid, pid_str);
-                return is_process_running(pid);
-            } else {
-                tracing::warn!("无效的PID格式: {} (清理后: {})", pid_str, clean_pid_str);
-                // 删除无效的PID文件
-                if let Err(e) = fs::remove_file(&pid_file) {
-                    tracing::warn!("无法删除无效的PID文件: {}", e);
-                } else {
-                    tracing::info!("已删除无效的PID文件");
-                }
-            }
-        } else {
-            tracing::warn!("无法读取PID文件: {:?}", pid_file);
-        }
-    } else {
-        tracing::debug!("PID文件不存在: {:?}", pid_file);
-    }
-    
-    false
-}
-
-// 使用模式检查进程是否运行
-fn is_process_running_by_pattern(pattern: &str) -> bool {
-    #[cfg(not(windows))]
-    {
-        let ps_cmd = format!("ps -ef | grep '[{}]' | grep -v grep | wc -l", pattern);
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(&ps_cmd)
-            .output();
-            
-        match output {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let count = stdout.trim().parse::<i32>().unwrap_or(0);
-                let exists = count > 0;
-                tracing::debug!("模式'{}'进程检查结果: {}, 找到{}个进程", pattern, exists, count);
-                exists
-            },
-            Err(e) => {
-                tracing::warn!("模式进程检查失败: {}", e);
-                false
-            }
-        }
-    }
-    
-    #[cfg(windows)]
-    {
-        // 在Windows上使用更通用的检查方式
-        false
-    }
-}
-
-/// 启动服务
+/// 启动守护进程 (Unix)
+#[cfg(all(unix, feature = "daemon-unix"))]
 pub fn start_daemon(config: &NodeConfig) -> Result<()> {
-    // 检查服务是否已运行
-    if is_running() {
-        return Err(anyhow!("服务已经在运行中"));
-    }
-    
-    // 创建数据目录
-    config.create_data_dir()?;
-    
-    // 创建日志目录
-    let log_dir = logger::log_dir_path();
-    fs::create_dir_all(&log_dir)
-        .with_context(|| format!("无法创建日志目录: {:?}", log_dir))?;
-    
-    // 确保 PID 文件路径的父目录存在
-    let pid_path = pid_file_path();
-    if let Some(parent) = pid_path.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("无法创建PID文件目录: {:?}", parent))?;
-            tracing::info!("已创建PID文件目录: {:?}", parent);
-        }
-    }
-    
-    // 获取当前可执行文件路径
-    let exe_path = env::current_exe()
-        .with_context(|| "无法获取当前可执行文件路径")?;
-        
-    tracing::info!("准备启动守护进程，可执行文件: {:?}", exe_path);
-    
-    #[cfg(target_os = "macos")]
-    {
-        // 在macOS上使用前台启动方式运行守护进程
-        let exe_path_str = exe_path.to_string_lossy();
-        let log_dir = logger::log_dir_path();
-        
-        // 创建日志目录
-        if !log_dir.exists() {
-            if let Err(e) = fs::create_dir_all(&log_dir) {
-                println!("无法创建日志目录 {:?}: {}", log_dir, e);
-            } else {
-                println!("创建日志目录: {:?}", log_dir);
-            }
-        }
-        
-        let debug_log = log_dir.join("daemon_debug.log");
-        println!("调试日志文件: {:?}", debug_log);
+    // 确保 PID 目录存在
+    fs::create_dir_all(pid_dir_path())?;
 
-        // 先尝试清理可能已经存在但没有正确运行的进程
-        let clean_cmd = "pkill -f 'librorum.*run.*--daemon' || true";
-        println!("执行清理命令: {}", clean_cmd);
-        let _ = Command::new("sh").arg("-c").arg(clean_cmd).status();
-        
-        // 构建完整的启动命令，注意子命令格式
-        // 根据help输出，run --daemon不接受--config参数，需要在主命令中指定
-        let config_path = if let Some(config_file) = NodeConfig::find_config_file() {
-            format!("-c \"{}\"", config_file.to_string_lossy())
-        } else {
-            String::new()
-        };
-        
-        // 以正确的参数格式启动：先是全局参数-c/-l，然后是子命令run，再是子命令参数--daemon
-        let cmd = format!(
-            "cd {} && {} -l debug {} run --daemon > /tmp/librorum_test.log 2>&1 &", 
-            std::env::current_dir().unwrap_or_default().to_string_lossy(),
-            exe_path_str,
-            config_path
-        );
-        
-        println!("执行命令: {}", cmd);
-        
-        // 执行启动命令
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg(&cmd)
-            .status()
-            .with_context(|| "无法启动服务进程")?;
-        
-        println!("命令执行状态: {:?}", status);
-        
-        // 等待进程启动
-        println!("等待进程启动...");
-        thread::sleep(Duration::from_secs(2));
-        
-        // 查找进程
-        let ps_cmd = "ps -ef | grep '[l]ibrorum.*run.*--daemon' | awk '{print $2}'";
-        println!("执行ps查找: {}", ps_cmd);
-        
-        let ps_output = Command::new("sh")
-            .arg("-c")
-            .arg(ps_cmd)
-            .output()
-            .with_context(|| "无法执行ps命令")?;
-            
-        let pids = String::from_utf8_lossy(&ps_output.stdout).trim().to_string();
-        println!("找到的PID: '{}'", pids);
-        
-        if !pids.is_empty() {
-            // 显示进程详情
-            let detail_cmd = format!("ps -p {} -o pid,ppid,command", pids);
-            println!("查看进程详情: {}", detail_cmd);
-            
-            let detail_output = Command::new("sh")
-                .arg("-c")
-                .arg(&detail_cmd)
-                .output();
-                
-            if let Ok(output) = detail_output {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                println!("进程详情:\n{}", stdout);
-            }
-            
-            // 写入PID文件
-            let mut pid_file = File::create(&pid_path)
-                .with_context(|| format!("无法创建PID文件: {:?}", pid_path))?;
-                
-            println!("写入PID文件: {:?}, 内容: {}", pid_path, pids);
-            pid_file
-                .write_all(pids.as_bytes())
-                .with_context(|| "无法写入PID文件")?;
-                
-            println!("服务已成功启动，PID: {}", pids);
-            return Ok(());
-        }
-        
-        // 检查临时日志
-        println!("\n===== 检查临时日志文件 =====");
-        let _ = Command::new("sh")
-            .arg("-c")
-            .arg("cat /tmp/librorum_test.log 2>/dev/null || echo '运行日志文件不存在'")
-            .status();
-        
-        // 使用临时PID
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let temp_pid = format!("{}", timestamp);
-        let mut pid_file = File::create(&pid_path)
-            .with_context(|| format!("无法创建PID文件: {:?}", pid_path))?;
-            
-        println!("使用临时PID: {}, 文件: {:?}", temp_pid, pid_path);
-        pid_file
-            .write_all(temp_pid.as_bytes())
-            .with_context(|| "无法写入PID文件")?;
-
-        println!(
-            "服务已启动，但无法确认是否正在运行，使用临时PID标记: {}",
-            temp_pid
-        );
+    // 检查是否已经运行
+    if daemon_running() {
+        println!("服务已经在运行中");
         return Ok(());
     }
-    
-    #[cfg(all(not(windows), not(target_os = "macos")))]
-    {
-        // Linux系统使用常规的nohup方式
-        let exe_path_str = exe_path.to_string_lossy();
 
-        // 构建shell命令
-        let mut shell_cmd = format!("nohup {} run --daemon", exe_path_str);
+    let executable = get_executable_path()?;
 
-        // 添加配置文件参数
-        if let Some(config_file) = NodeConfig::find_config_file() {
-            shell_cmd.push_str(&format!(" --config \"{}\"", config_file.to_string_lossy()));
+    // 配置守护进程
+    let daemonize = Daemonize::new()
+        .pid_file(pid_file_path())
+        .chown_pid_file(false) // 不要修改 PID 文件的所有权
+        .working_directory("."); // 保持当前工作目录
+
+    // 启动前输出提示
+    println!("Librorum 服务正在启动（守护进程）...");
+
+    // 序列化配置以传递给子进程
+    let config_str = toml::to_string(config).with_context(|| "无法序列化配置")?;
+    let config_file = pid_dir_path().join("tmp_config.toml");
+    let mut file = fs::File::create(&config_file)?;
+    file.write_all(config_str.as_bytes())?;
+
+    // 启动守护进程
+    match daemonize.start() {
+        Ok(_) => {
+            // 这部分代码在守护进程中执行
+            let config_str = config_file.to_string_lossy();
+            let status = Command::new(&executable)
+                .args(["run", "--daemon", "--config", &config_str])
+                .status()
+                .with_context(|| "无法启动服务进程")?;
+
+            if !status.success() {
+                let exit_code = status.code().unwrap_or(-1);
+                return Err(anyhow!("服务进程异常退出，退出码: {}", exit_code));
+            }
+
+            // 删除临时配置文件
+            let _ = fs::remove_file(config_file);
+
+            Ok(())
         }
-
-        // 添加环境变量
-        shell_cmd.push_str(&format!(" --log-level {}", config.log_level));
-        shell_cmd.push_str(" > /dev/null 2>&1 &");
-
-        tracing::info!("启动守护进程命令: {}", shell_cmd);
-
-        // 使用sh执行命令
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg(&shell_cmd)
-            .status()
-            .with_context(|| "无法启动服务进程")?;
-
-        if !status.success() {
-            return Err(anyhow!("启动服务进程失败，返回状态: {:?}", status.code()));
-        }
-
-        // 等待进程启动
-        thread::sleep(Duration::from_secs(1));
-
-        // 获取进程PID
-        let ps_cmd = format!("pgrep -f '{} run --daemon'", exe_path_str);
-        let ps_output = Command::new("sh")
-            .arg("-c")
-            .arg(&ps_cmd)
-            .output()
-            .with_context(|| "无法获取进程PID")?;
-
-        let pid_str = String::from_utf8_lossy(&ps_output.stdout).trim().to_string();
-        if !pid_str.is_empty() {
-            let pid = pid_str.parse::<u32>()
-                .with_context(|| format!("无效的PID格式: {}", pid_str))?;
-
-            // 写入PID文件
-            let mut pid_file = File::create(&pid_path)
-                .with_context(|| format!("无法创建PID文件: {:?}", pid_path))?;
-
-            pid_file.write_all(pid_str.as_bytes())
-                .with_context(|| "无法写入PID文件")?;
-
-            tracing::info!("已写入PID文件: {:?} 内容: {}", pid_path, pid_str);
-            println!("服务已成功启动，PID: {}", pid);
-            return Ok(());
-        }
-
-        // 使用临时PID标记
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let temp_pid = format!("{}", timestamp);
-        let mut pid_file = File::create(&pid_path)
-            .with_context(|| format!("无法创建PID文件: {:?}", pid_path))?;
-
-        pid_file.write_all(temp_pid.as_bytes())
-            .with_context(|| "无法写入PID文件")?;
-
-        tracing::info!("已写入临时PID文件: {:?} 内容: {}", pid_path, temp_pid);
-        println!("服务已成功启动（使用临时PID标记）");
-        return Ok(());
+        Err(e) => Err(anyhow!("启动守护进程失败: {}", e)),
     }
-    
-    #[cfg(windows)]
-    {
-        // 在 Windows 上使用 PowerShell 启动无窗口进程
-        let mut windows_cmd = Command::new("powershell");
-        
-        // 构造PowerShell兼容的参数列表
-        let mut ps_args = Vec::new();
-        
-        // 添加基本参数 (需要添加引号)
-        ps_args.push("\"run\"".to_string());
-        ps_args.push("\"--daemon\"".to_string());
-        
-        // 添加配置文件参数
-        if let Some(config_path) = NodeConfig::find_config_file() {
-            ps_args.push("\"--config\"".to_string());
-            ps_args.push(format!("\"{}\"", config_path.to_string_lossy()));
-        }
-        
-        // 将参数数组转换为PowerShell参数字符串
-        let args_str = ps_args.join(",");
-        
-        // 执行启动命令 - 使用完全兼容的PowerShell语法
-        let cmd_str = format!(
-            "Start-Process -FilePath \"{}\" -ArgumentList {} -WindowStyle Hidden", 
-            exe_path.to_string_lossy(),
-            args_str
-        );
-        
-        tracing::debug!("Windows启动命令: {}", cmd_str);
-        
-        windows_cmd
-            .arg("-Command")
-            .arg(cmd_str)
-            .spawn()
-            .with_context(|| "无法在 Windows 上启动服务进程")?;
-            
-        // 等待一会儿，确保进程启动
-        thread::sleep(Duration::from_secs(1));
-        
-        // 获取 PID
-        let output = Command::new("powershell")
-            .arg("-Command")
-            .arg(format!("Get-Process -Name \"{}\" | Select-Object -ExpandProperty Id", 
-                         exe_path.file_stem().unwrap().to_string_lossy()))
-            .output()
-            .with_context(|| "无法获取进程 PID")?;
-            
-        let pid = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        
-        if pid.is_empty() {
-            return Err(anyhow!("服务启动失败，未能获取进程ID"));
-        }
-        
-        // 写入 PID 文件 - 确保没有额外字符
-        let mut pid_file = File::create(&pid_path)
-            .with_context(|| format!("无法创建 PID 文件: {:?}", pid_path))?;
-        
-        // 确保PID写入格式正确 - 只写入纯数字    
-        pid_file.write_all(pid.trim().as_bytes())
-            .with_context(|| "无法写入 PID 文件")?;
-            
-        tracing::info!("Windows服务已启动，PID: {}", pid);
-        
-        // 等待服务启动
-        thread::sleep(Duration::from_secs(2));
-        
-        // 最后验证Windows服务是否真的在运行
-        if is_running() {
-            println!("服务已成功启动");
-            return Ok(());
-        } else {
-            tracing::error!("无法检测到Windows服务运行，尽管已启动进程，请检查日志文件");
-            return Err(anyhow!("服务启动失败，请检查日志文件"));
-        }
-    }
-
-    // 确保每个平台特定的代码路径都有返回，这里不再需要默认返回
-    #[allow(unreachable_code)]
-    Ok(())
 }
 
-/// 停止服务
-pub fn stop_daemon() -> Result<()> {
-    let pid_file = pid_file_path();
-    
-    // 检查是否有运行中的守护进程
-    if !is_running() {
-        return Err(anyhow!("服务未运行"));
+/// 启动守护进程 (非Unix，非Windows Service)
+#[cfg(not(any(
+    all(unix, feature = "daemon-unix"),
+    all(windows, feature = "windows_service")
+)))]
+pub fn start_daemon(config: &NodeConfig) -> Result<()> {
+    println!("启动服务（标准模式，非守护进程）");
+
+    // 确保 PID 目录存在
+    fs::create_dir_all(pid_dir_path())?;
+
+    // 检查是否已经运行
+    if daemon_running() {
+        println!("服务已经在运行中");
+        return Ok(());
     }
-    
-    // 读取PID文件内容（如果存在）
-    if pid_file.exists() {
-        if let Ok(pid_str) = fs::read_to_string(&pid_file) {
-            // 分割并解析多个PID（用空格、换行或逗号分隔）
-            let pids: Vec<u32> = pid_str
-                .split(&[' ', '\n', ','][..])
-                .filter_map(|s| s.trim().parse::<u32>().ok())
-                .collect();
-                
-            if !pids.is_empty() {
-                tracing::info!("从PID文件找到{}个进程: {:?}", pids.len(), pids);
-                
-                // 针对每个PID执行停止
-                for pid in &pids {
-                    if *pid > 0 {
-                        tracing::info!("正在停止进程，PID: {}", pid);
-                        stop_process(*pid)?;
-                    }
-                }
-                
-                // 删除PID文件
-                if let Err(e) = fs::remove_file(&pid_file) {
-                    tracing::warn!("无法删除PID文件: {:?}, 错误: {}", pid_file, e);
-                } else {
-                    tracing::info!("已删除PID文件: {:?}", pid_file);
-                }
-                
-                println!("服务已成功停止");
-                return Ok(());
-            }
-        }
-    }
-    
-    // 如果没有有效的PID文件，使用进程模式匹配进行停止
-    #[cfg(not(windows))]
+
+    let executable = get_executable_path()?;
+
+    // 序列化配置以传递给子进程
+    let config_str = toml::to_string(config).with_context(|| "无法序列化配置")?;
+    let config_file = pid_dir_path().join("tmp_config.toml");
+    let mut file = fs::File::create(&config_file)?;
+    file.write_all(config_str.as_bytes())?;
+
+    // 在后台启动进程
+    #[cfg(unix)]
     {
-        tracing::info!("使用进程名称模式匹配停止服务");
-        
-        // 查找所有匹配的进程
-        let ps_cmd = "ps -ef | grep '[l]ibrorum.*run.*--daemon' | grep -v grep | awk '{print $2}'";
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(ps_cmd)
-            .output();
-            
-        match output {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let pids = stdout.trim();
-                
-                if !pids.is_empty() {
-                    // 分割并解析多个PID
-                    let pid_list: Vec<u32> = pids
-                        .split_whitespace()
-                        .filter_map(|s| s.parse::<u32>().ok())
-                        .collect();
-                        
-                    if !pid_list.is_empty() {
-                        tracing::info!("找到{}个进程: {:?}", pid_list.len(), pid_list);
-                        
-                        // 停止每个进程
-                        for pid in &pid_list {
-                            tracing::info!("正在停止进程，PID: {}", pid);
-                            stop_process(*pid)?;
-                        }
-                        
-                        // 删除PID文件（如果存在）
-                        if pid_file.exists() {
-                            if let Err(e) = fs::remove_file(&pid_file) {
-                                tracing::warn!("无法删除PID文件: {:?}, 错误: {}", pid_file, e);
-                            } else {
-                                tracing::info!("已删除PID文件: {:?}", pid_file);
-                            }
-                        }
-                        
-                        println!("服务已成功停止");
-                        return Ok(());
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("获取进程列表失败: {}", e);
-            }
-        }
+        let config_str = config_file.to_string_lossy();
+        let child = Command::new(&executable)
+            .args(["run", "--daemon", "--config", &config_str])
+            .spawn()
+            .with_context(|| "无法启动服务进程")?;
+
+        // 将PID保存到文件
+        let pid = child.id();
+        let mut pid_file = fs::File::create(pid_file_path())?;
+        pid_file.write_all(pid.to_string().as_bytes())?;
+
+        println!("Librorum 服务已启动（后台进程，PID: {}）", pid);
+        Ok(())
     }
-    
+
     #[cfg(windows)]
     {
-        tracing::info!("在Windows上查找librorum进程");
+        let config_str = config_file.to_string_lossy();
         
-        // 在Windows上使用更通用的匹配方式
-        let tasklist_cmd = "powershell -Command \"Get-Process | Where-Object {$_.Name -like '*librorum*'} | ForEach-Object {$_.Id}\"";
-        let output = Command::new("cmd")
-            .arg("/c")
-            .arg(tasklist_cmd)
-            .output();
-            
-        match output {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let pid_list: Vec<u32> = stdout
-                    .split_whitespace()
-                    .filter_map(|s| s.parse::<u32>().ok())
-                    .collect();
-                    
-                if !pid_list.is_empty() {
-                    tracing::info!("找到{}个Windows进程: {:?}", pid_list.len(), pid_list);
-                    
-                    // 停止每个进程
-                    for pid in &pid_list {
-                        tracing::info!("正在停止Windows进程，PID: {}", pid);
-                        
-                        let status = Command::new("taskkill")
-                            .args(&["/PID", &pid.to_string(), "/F"])
-                            .status();
-                            
-                        if let Err(e) = status {
-                            tracing::warn!("无法停止Windows进程: PID {}, 错误: {}", pid, e);
-                        } else {
-                            tracing::info!("已停止Windows进程: PID {}", pid);
-                        }
-                    }
-                    
-                    // 删除PID文件（如果存在）
-                    if pid_file.exists() {
-                        if let Err(e) = fs::remove_file(&pid_file) {
-                            tracing::warn!("无法删除PID文件: {:?}, 错误: {}", pid_file, e);
-                        } else {
-                            tracing::info!("已删除PID文件: {:?}", pid_file);
-                        }
-                    }
-                    
-                    println!("服务已成功停止");
-                    return Ok(());
-                }
-            }
-            Err(e) => {
-                tracing::warn!("获取Windows进程列表失败: {}", e);
-            }
-        }
-    }
-    
-    // 最终检查服务是否已停止
-    if is_running() {
-        Err(anyhow!("服务未能成功停止"))
-    } else {
-        println!("服务已成功停止");
+        // 在Windows上使用CreateProcess API启动进程
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        
+        let child = Command::new(&executable)
+            .args(["run", "--daemon", "--config", &config_str])
+            .creation_flags(DETACHED_PROCESS)
+            .spawn()
+            .with_context(|| "无法启动服务进程")?;
+        
+        // 将PID保存到文件
+        let pid = child.id();
+        let mut pid_file = fs::File::create(pid_file_path())?;
+        pid_file.write_all(pid.to_string().as_bytes())?;
+        
+        println!("Librorum 服务已启动（后台进程，PID: {}）", pid);
         Ok(())
     }
 }
 
-/// 停止单个进程
-fn stop_process(pid: u32) -> Result<()> {
-    #[cfg(not(windows))]
-    {
-        #[cfg(target_os = "macos")]
-        {
-            // 检查是否有launchd服务在运行
-            let launchctl_output = Command::new("launchctl")
-                .arg("list")
-                .arg("com.librorum.daemon")
-                .output();
-                
-            match launchctl_output {
-                Ok(output) => {
-                    let output_str = String::from_utf8_lossy(&output.stdout);
-                    let error_str = String::from_utf8_lossy(&output.stderr);
-                    
-                    tracing::debug!("launchctl list输出: stdout='{}', stderr='{}'", output_str, error_str);
-                    
-                    if !output_str.contains("Could not find service") {
-                        tracing::info!("通过launchctl停止服务");
-                        
-                        // 获取Launch Agent路径
-                        let launch_agent_path = dirs::home_dir()
-                            .unwrap_or_else(|| PathBuf::from("."))
-                            .join("Library/LaunchAgents/com.librorum.daemon.plist");
-                            
-                        tracing::debug!("Launch Agent路径: {:?}", launch_agent_path);
-                        
-                        // 检查plist文件是否存在
-                        if launch_agent_path.exists() {
-                            tracing::info!("找到Launch Agent文件: {:?}", launch_agent_path);
-                            
-                            // 使用launchctl卸载服务
-                            let status = Command::new("launchctl")
-                                .arg("unload")
-                                .arg("-w")
-                                .arg(&launch_agent_path)
-                                .output();
-                                
-                            match status {
-                                Ok(result) => {
-                                    if result.status.success() {
-                                        tracing::info!("launchctl成功卸载服务");
-                                    } else {
-                                        let stderr = String::from_utf8_lossy(&result.stderr);
-                                        tracing::warn!("launchctl卸载服务返回非零状态: {}, stderr: {}", 
-                                            result.status, stderr);
-                                    }
-                                },
-                                Err(e) => {
-                                    tracing::warn!("launchctl卸载服务失败: {}", e);
-                                }
-                            }
-                        } else {
-                            tracing::warn!("Launch Agent文件不存在: {:?}", launch_agent_path);
-                        }
-                    } else {
-                        tracing::debug!("未找到launchctl服务");
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!("无法检查launchctl服务状态: {}", e);
-                }
-            }
-        }
-        
-        // 使用kill命令终止进程
-        tracing::info!("使用kill命令终止进程 PID: {}", pid);
-        let kill_status = Command::new("kill")
-            .arg(pid.to_string())
-            .status();
-            
-        if let Err(e) = kill_status {
-            tracing::warn!("常规kill命令失败: {}", e);
-            
-            // 如果普通kill命令失败，尝试发送SIGKILL信号
-            tracing::warn!("尝试发送SIGKILL信号");
-            let force_kill_status = Command::new("kill")
-                .arg("-9")
-                .arg(pid.to_string())
-                .status();
-                
-            if let Err(e) = force_kill_status {
-                tracing::warn!("SIGKILL也未能终止进程: {}", e);
-                return Err(anyhow!("无法终止进程 PID {}", pid));
-            } else {
-                tracing::info!("成功通过SIGKILL终止进程 PID: {}", pid);
-            }
-        } else {
-            tracing::info!("成功通过常规kill终止进程 PID: {}", pid);
-        }
-        
-        // 等待一小段时间后检查进程是否仍在运行
-        thread::sleep(Duration::from_millis(500));
-        if is_process_running(pid) {
-            tracing::warn!("进程{}仍在运行，尝试发送SIGKILL信号", pid);
-            let force_kill_status = Command::new("kill")
-                .arg("-9")
-                .arg(pid.to_string())
-                .status();
-                
-            if let Err(e) = force_kill_status {
-                tracing::warn!("SIGKILL也未能终止进程: {}", e);
-                return Err(anyhow!("无法终止进程 PID {}", pid));
-            }
-            
-            // 再次检查进程
-            thread::sleep(Duration::from_millis(500));
-            if is_process_running(pid) {
-                tracing::error!("无法终止进程 PID: {}, 即使使用SIGKILL", pid);
-                return Err(anyhow!("无法终止进程 PID {}", pid));
-            }
+/// 启动Windows服务
+#[cfg(all(windows, feature = "windows_service"))]
+pub fn start_daemon(config: &NodeConfig) -> Result<()> {
+    // 确保 PID 目录存在
+    fs::create_dir_all(pid_dir_path())?;
+
+    // 检查服务是否已经注册和运行
+    if let Ok(status) = get_service_status() {
+        if status.current_state == ServiceState::Running {
+            println!("服务已经在运行中");
+            return Ok(());
+        } else if status.current_state == ServiceState::Stopped {
+            // 服务已注册但已停止，启动它
+            let service_manager = open_service_manager()?;
+            let service = service_manager
+                .open_service(SERVICE_NAME, ServiceAccess::START)
+                .with_context(|| format!("无法打开服务 {}", SERVICE_NAME))?;
+
+            // 序列化配置以传递给服务
+            let config_file = pid_dir_path().join("service_config.toml");
+            let config_str = toml::to_string(config).with_context(|| "无法序列化配置")?;
+            let mut file = fs::File::create(&config_file)?;
+            file.write_all(config_str.as_bytes())?;
+
+            service.start(&[config_file.to_str().unwrap()])?;
+            println!("Librorum 服务已启动");
+            return Ok(());
         }
     }
-    
-    #[cfg(windows)]
-    {
-        // 在 Windows 上使用 taskkill 命令
-        let status = Command::new("taskkill")
-            .args(&["/PID", &pid.to_string(), "/F"])
-            .status();
-            
-        if let Err(e) = status {
-            tracing::warn!("无法停止Windows进程: PID {}, 错误: {}", pid, e);
-            return Err(anyhow!("停止Windows进程失败: {}", e));
-        } else {
-            tracing::info!("已停止Windows进程: PID {}", pid);
-        }
-    }
-    
+
+    // 服务未注册，先注册服务
+    let service_manager = open_service_manager()?;
+    let executable = get_executable_path()?;
+
+    // 序列化配置以传递给服务
+    let config_file = pid_dir_path().join("service_config.toml");
+    let config_str = toml::to_string(config).with_context(|| "无法序列化配置")?;
+    let mut file = fs::File::create(&config_file)?;
+    file.write_all(config_str.as_bytes())?;
+
+    // 创建服务命令行
+    let service_cmd = format!(
+        "\"{}\" run --daemon --config=\"{}\"",
+        executable.display(),
+        config_file.display()
+    );
+
+    // 注册服务
+    let service_info = ServiceInfo {
+        name: OsString::from(SERVICE_NAME),
+        display_name: OsString::from(SERVICE_DISPLAY_NAME),
+        service_type: ServiceType::OWN_PROCESS,
+        start_type: ServiceStartType::AutoStart,
+        error_control: ServiceErrorControl::Normal,
+        executable: executable.into(),
+        launch_arguments: vec![OsString::from("run"), OsString::from("--daemon")],
+        dependencies: vec![],
+        account_name: None,
+        account_password: None,
+    };
+
+    let service = service_manager.create_service(
+        &service_info,
+        ServiceAccess::START | ServiceAccess::CHANGE_CONFIG,
+    )?;
+
+    // 设置服务描述
+    service.set_description(SERVICE_DESCRIPTION)?;
+
+    // 启动服务
+    service.start(&[config_file.to_str().unwrap()])?;
+
+    println!("Librorum 服务已注册并启动");
     Ok(())
 }
 
-/// 重启服务
-pub fn restart_daemon(config: &NodeConfig) -> Result<()> {
-    // 如果服务正在运行，先停止
-    if is_running() {
-        stop_daemon()?;
-    }
-    
-    // 等待服务完全停止
-    thread::sleep(Duration::from_secs(2));
-    
-    // 启动服务
-    start_daemon(config)
+/// 打开服务管理器
+#[cfg(all(windows, feature = "windows_service"))]
+fn open_service_manager() -> Result<ServiceManager> {
+    ServiceManager::local_computer(
+        None,
+        ServiceManagerAccess::CONNECT
+            | ServiceManagerAccess::CREATE_SERVICE
+            | ServiceManagerAccess::ENUMERATE_SERVICE,
+    )
+    .with_context(|| "无法连接到服务管理器")
 }
 
 /// 获取服务状态
-pub fn daemon_status() -> String {
-    if is_running() {
-        let pid_file = pid_file_path();
-        if let Ok(pid_str) = fs::read_to_string(&pid_file) {
-            format!("服务正在运行，PID: {}", pid_str.trim())
-        } else {
-            "服务正在运行，但无法读取 PID".to_string()
-        }
-    } else {
-        "服务未运行".to_string()
-    }
-}
+#[cfg(all(windows, feature = "windows_service"))]
+fn get_service_status() -> Result<ServiceStatus> {
+    let service_manager = open_service_manager()?;
 
-/// 获取服务日志
-pub fn view_logs(lines: usize) -> Result<String> {
-    // 检查服务是否在运行
-    let status_msg = if !is_running() {
-        "警告: 服务当前未运行\n\n"
-    } else {
-        ""
+    let service = match service_manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS) {
+        Ok(service) => service,
+        Err(_) => return Err(anyhow!("服务未安装")),
     };
-    
-    // 读取日志文件
-    let log_path = logger::log_file_path();
-    
-    // 检查日志文件是否存在
-    if !log_path.exists() {
-        return Ok(format!("{}服务状态: {}\n\n日志文件不存在: {:?}", 
-            status_msg, daemon_status(), log_path));
-    }
-    
-    // 如果日志文件存在，尝试读取
-    match logger::read_log_tail(lines) {
-        Ok(content) => {
-            if content.is_empty() {
-                Ok(format!("{}服务状态: {}\n\n日志文件为空", 
-                    status_msg, daemon_status()))
-            } else {
-                // 在Windows上特殊处理，确保控制台代码页正确
-                #[cfg(windows)]
-                {
-                    // 尝试设置控制台代码页为UTF-8以正确显示中文
-                    let _ = std::process::Command::new("powershell")
-                        .args(&["-Command", "chcp 65001"])
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status();
-                }
-                
-                Ok(format!("{}服务状态: {}\n\n日志内容 (最后 {} 行):\n{}", 
-                    status_msg, daemon_status(), lines, content))
-            }
-        },
-        Err(e) => {
-            Ok(format!("{}服务状态: {}\n\n无法读取日志: {}", 
-                status_msg, daemon_status(), e))
-        }
-    }
+
+    service.query_status().with_context(|| "无法查询服务状态")
 }
 
-#[allow(dead_code)] // 由于条件编译，编译器可能认为此函数未使用
-fn is_process_running(pid: u32) -> bool {
-    #[cfg(not(windows))]
-    {
-        #[cfg(target_os = "macos")]
-        {
-            // 先使用ps命令检查进程是否存在，获取命令
-            let ps_check = Command::new("ps")
-                .arg("-p")
-                .arg(pid.to_string())
-                .arg("-o")
-                .arg("command=")
-                .output();
-                
-            match ps_check {
-                Ok(output) => {
-                    let command = String::from_utf8_lossy(&output.stdout);
-                    let command_str = command.trim();
-                    let exists = !command_str.is_empty();
-                    
-                    if exists {
-                        tracing::debug!("进程 {} 正在运行，命令: '{}'", pid, command_str);
-                        true
-                    } else {
-                        tracing::debug!("进程 {} 不存在", pid);
-                        false
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!("检查进程 {} 状态时出错: {}", pid, e);
-                    false
-                }
-            }
-        }
-        
-        #[cfg(not(target_os = "macos"))]
-        {
-            // 在其他类 Unix 系统上检查进程是否存在
-            let output = Command::new("ps")
-                .arg("-p")
-                .arg(pid.to_string())
-                .arg("-o")
-                .arg("comm=")
-                .output();
-                
-            match output {
-                Ok(output) => {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let process_name = stdout.trim();
-                    let exists = !process_name.is_empty();
-                    if exists {
-                        tracing::debug!("进程 {} 正在运行，名称: '{}'", pid, process_name);
-                    } else {
-                        tracing::debug!("进程 {} 不存在", pid);
-                    }
-                    exists
-                },
-                Err(e) => {
-                    tracing::warn!("检查进程 {} 状态时出错: {}", pid, e);
-                    false
-                }
-            }
-        }
+/// 停止守护进程 (Unix)
+#[cfg(unix)]
+pub fn stop_daemon() -> Result<()> {
+    let pid_file = pid_file_path();
+
+    if !pid_file.exists() {
+        println!("服务未运行");
+        return Ok(());
     }
-    
-    #[cfg(windows)]
-    {
-        let output = Command::new("powershell")
-            .arg("-Command")
-            .arg(format!("Get-Process -Id {} -ErrorAction SilentlyContinue", pid))
-            .output();
-            
-        match output {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let exists = !stdout.trim().is_empty();
-                if exists {
-                    tracing::debug!("Windows进程 {} 正在运行", pid);
-                } else {
-                    tracing::debug!("Windows进程 {} 不存在", pid);
-                }
-                exists
-            },
-            Err(e) => {
-                tracing::warn!("检查Windows进程 {} 状态时出错: {}", pid, e);
+
+    let pid_str = fs::read_to_string(&pid_file).with_context(|| "无法读取PID文件")?;
+    let pid = pid_str.trim().parse::<i32>().with_context(|| "无效的PID")?;
+
+    // 发送终止信号
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+
+    // 等待进程退出
+    let mut attempts = 0;
+    while daemon_running() && attempts < 10 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        attempts += 1;
+    }
+
+    if daemon_running() {
+        // 如果进程仍在运行，尝试强制终止
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+        println!("已强制停止服务");
+    } else {
+        println!("服务已停止");
+    }
+
+    // 删除PID文件
+    if pid_file.exists() {
+        let _ = fs::remove_file(&pid_file);
+    }
+
+    Ok(())
+}
+
+/// 停止Windows进程 (非Service)
+#[cfg(all(windows, not(feature = "windows_service")))]
+pub fn stop_daemon() -> Result<()> {
+    let pid_file = pid_file_path();
+
+    if !pid_file.exists() {
+        println!("服务未运行");
+        return Ok(());
+    }
+
+    let pid_str = fs::read_to_string(&pid_file).with_context(|| "无法读取PID文件")?;
+    let pid = pid_str.trim().parse::<u32>().with_context(|| "无效的PID")?;
+
+    // 在Windows上使用taskkill命令终止进程
+    let status = Command::new("taskkill")
+        .args(&["/F", "/PID", &pid.to_string()])
+        .status()
+        .with_context(|| "无法执行taskkill命令")?;
+
+    if status.success() {
+        println!("服务已停止");
+    } else {
+        println!("停止服务失败");
+    }
+
+    // 删除PID文件
+    if pid_file.exists() {
+        let _ = fs::remove_file(&pid_file);
+    }
+
+    Ok(())
+}
+
+/// 停止Windows服务
+#[cfg(all(windows, feature = "windows_service"))]
+pub fn stop_daemon() -> Result<()> {
+    let service_manager = open_service_manager()?;
+
+    let service = match service_manager.open_service(
+        SERVICE_NAME,
+        ServiceAccess::STOP | ServiceAccess::QUERY_STATUS,
+    ) {
+        Ok(service) => service,
+        Err(_) => {
+            println!("服务未安装");
+            return Ok(());
+        }
+    };
+
+    let status = service.query_status()?;
+
+    if status.current_state == ServiceState::Stopped {
+        println!("服务已经停止");
+        return Ok(());
+    }
+
+    service.stop()?;
+
+    // 等待服务完全停止
+    let mut attempts = 0;
+    let max_attempts = 10;
+    while attempts < max_attempts {
+        let current_status = service.query_status()?;
+        if current_status.current_state == ServiceState::Stopped {
+            println!("服务已停止");
+            return Ok(());
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        attempts += 1;
+    }
+
+    println!("服务停止操作已发送，但服务可能仍在关闭中");
+    Ok(())
+}
+
+/// 重启守护进程
+pub fn restart_daemon(config: &NodeConfig) -> Result<()> {
+    stop_daemon()?;
+
+    // 等待一会儿确保服务完全停止
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    start_daemon(config)?;
+    Ok(())
+}
+
+/// 检查守护进程是否在运行 (Unix)
+#[cfg(unix)]
+pub fn daemon_running() -> bool {
+    let pid_file = pid_file_path();
+
+    if !pid_file.exists() {
+        return false;
+    }
+
+    match fs::read_to_string(&pid_file) {
+        Ok(pid_str) => {
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                // 检查进程是否存在
+                unsafe { libc::kill(pid, 0) == 0 }
+            } else {
                 false
             }
         }
+        Err(_) => false,
     }
-} 
+}
+
+/// 检查守护进程是否在运行 (Windows非Service)
+#[cfg(all(windows, not(feature = "windows_service")))]
+pub fn daemon_running() -> bool {
+    let pid_file = pid_file_path();
+
+    if !pid_file.exists() {
+        return false;
+    }
+
+    match fs::read_to_string(&pid_file) {
+        Ok(pid_str) => {
+            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                // 在Windows上使用tasklist检查进程是否存在
+                let output = Command::new("tasklist")
+                    .args(&["/FI", &format!("PID eq {}", pid), "/NH"])
+                    .output();
+
+                match output {
+                    Ok(output) => {
+                        let output_str = String::from_utf8_lossy(&output.stdout);
+                        output_str.contains(&pid.to_string())
+                    }
+                    Err(_) => false,
+                }
+            } else {
+                false
+            }
+        }
+        Err(_) => false,
+    }
+}
+
+/// 检查Windows服务是否在运行
+#[cfg(all(windows, feature = "windows_service"))]
+pub fn daemon_running() -> bool {
+    match get_service_status() {
+        Ok(status) => status.current_state == ServiceState::Running,
+        Err(_) => false,
+    }
+}
+
+/// 获取守护进程状态信息
+pub fn daemon_status() -> String {
+    if daemon_running() {
+        let pid_file = pid_file_path();
+
+        #[cfg(not(all(windows, feature = "windows_service")))]
+        let pid_info = match fs::read_to_string(&pid_file) {
+            Ok(pid_str) => format!("PID: {}", pid_str.trim()),
+            Err(_) => "无法读取PID".to_string(),
+        };
+
+        #[cfg(all(windows, feature = "windows_service"))]
+        let pid_info = match get_service_status() {
+            Ok(status) => {
+                let state = match status.current_state {
+                    ServiceState::Running => "运行中",
+                    ServiceState::Stopped => "已停止",
+                    ServiceState::StartPending => "正在启动",
+                    ServiceState::StopPending => "正在停止",
+                    ServiceState::PausePending => "正在暂停",
+                    ServiceState::Paused => "已暂停",
+                    ServiceState::ContinuePending => "正在继续",
+                    _ => "未知状态",
+                };
+                format!("状态: {}", state)
+            }
+            Err(_) => "无法获取服务状态".to_string(),
+        };
+
+        format!("服务状态: 运行中\n{}", pid_info)
+    } else {
+        "服务状态: 未运行".to_string()
+    }
+}
+
+/// 查看日志
+pub fn view_logs(tail: usize) -> Result<String> {
+    logger::view_recent_logs(tail)
+}

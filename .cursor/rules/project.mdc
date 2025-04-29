@@ -5,8 +5,7 @@ alwaysApply: true
 ---
 # 执行要求
 1. **忽略全局英文要求，必须使用中文进行输出，日志也使用中文**
-2. 另外你需要在 README.md 中不断的更新 RoadMap 的子弹列表
-3. 每次执行都要进行单元测试，保证你修改的代码是可以正常运行的，**需要 cargo test 来检查是否修改正确了，不断的运行、统筹规划、修复、运行**
+2. 每次执行都要进行单元测试，保证你修改的代码是可以正常运行的，**需要 cargo test 来检查是否修改正确了，不断的运行、统筹规划、修复、运行**
 
 测试需要在两个平台上运行 Mac 和 windows 你可以通过 
 ```
@@ -19,8 +18,6 @@ ssh gy@windows.local '你的命令; exit'
 注意你必须使用cargo run start守护进程的方式来运行，不然会一直等待住的 ，禁止使用cargo run
 可以使用cargo run logs来看日志来判断是否有问题
 
-Usage: librorum.exe [OPTIONS] <COMMAND>
-
 Commands:
   start         启动服务（守护进程）
   stop          停止服务
@@ -29,7 +26,6 @@ Commands:
   logs          显示日志
   init          创建默认配置文件
   clean-logs    清理旧日志
-  test-connect  测试节点连接
   help          Print this message or the help of the given subcommand(s)
 
 Options:
