@@ -1,0 +1,25 @@
+syntax = "proto3";
+package node;
+
+// 节点服务定义
+service NodeService {
+  // 发送心跳包
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+// 心跳请求
+message HeartbeatRequest {
+  string node_id = 1;        // 节点ID，格式: nanoid.设备名.librorum.local
+  string address = 2;        // 节点服务地址，如: 192.168.1.100:50051
+  string system_info = 3;    // 系统信息，如: Windows 10, macOS 13.5
+  int64 timestamp = 4;       // 发送时间戳
+}
+
+// 心跳响应
+message HeartbeatResponse {
+  string node_id = 1;        // 响应节点ID
+  string address = 2;        // 响应节点地址
+  string system_info = 3;    // 响应节点系统信息
+  int64 timestamp = 4;       // 响应时间戳 
+  bool status = 5;           // 节点状态，true表示正常
+} 

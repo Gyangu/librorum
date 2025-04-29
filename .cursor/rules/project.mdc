@@ -3,14 +3,41 @@ description:
 globs: 
 alwaysApply: true
 ---
-**忽略全局英文要求，必须使用中文进行输出，日志也使用中文**
-
 # 执行要求
-1. 每次执行你都要在更新记录文档文档里列出来你做了什么事，如何有重复或者修改也直接进行记录或者修改之前的内容
+1. **忽略全局英文要求，必须使用中文进行输出，日志也使用中文**
 2. 另外你需要在 README.md 中不断的更新 RoadMap 的子弹列表
-3. 每次执行都要进行单元测试，保证你修改的代码是可以正常运行的，**你每次修复完要进行测试才算结束**
+3. 每次执行都要进行单元测试，保证你修改的代码是可以正常运行的，**需要 cargo test 来检查是否修改正确了，不断的运行、统筹规划、修复、运行**
 
-**你需要 cargo test 来检查是否修改正确了，不断的运行、统筹规划、修复、运行**
+测试需要在两个平台上运行 Mac 和 windows 你可以通过 
+```
+ssh gy@windows.local '你的命令; exit'
+```
+登陆到 windows 进行测试，注意这个不是工具，你需要执行命令行来进行，现在默认进入的就是 **E:\librorum** 直接执行命令即可，默认使用的是powershell
+
+你修改Mac上的代码会自动同步到 windows上因此 你测试完 Mac 可以直接测试 windows 上的效果
+
+注意你必须使用cargo run start守护进程的方式来运行，不然会一直等待住的 ，禁止使用cargo run
+可以使用cargo run logs来看日志来判断是否有问题
+
+Usage: librorum.exe [OPTIONS] <COMMAND>
+
+Commands:
+  start         启动服务（守护进程）
+  stop          停止服务
+  restart       重启服务
+  status        显示服务状态
+  logs          显示日志
+  init          创建默认配置文件
+  clean-logs    清理旧日志
+  test-connect  测试节点连接
+  help          Print this message or the help of the given subcommand(s)
+
+Options:
+  -c, --config <FILE>          配置文件路径
+  -l, --log-level <LOG_LEVEL>  日志级别 (trace, debug, info, warn, error) [default: info]
+  -h, --help                   Print help
+  -V, --version                Print version
+
 
 # 项目结构
 - 后端 (Rust):
@@ -44,10 +71,4 @@ alwaysApply: true
 - 在 `core/proto/` 中定义所有服务接口
 - 使用 Tonic 为 Swift 生成客户端代码
 
-# 开发工作流
-- 使用 Git 进行版本控制
-- 编写有意义的提交信息
-- 为新的开发创建功能分支
-- 提交 PR 进行代码审查
-- 提交前运行测试
-但核心设计和结构已经完成。
+

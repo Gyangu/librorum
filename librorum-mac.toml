@@ -1,0 +1,9 @@
+node_prefix = "mac-node"
+bind_host = "0.0.0.0"
+bind_port = 50051
+log_level = "debug"
+data_dir = "/Users/gy/Library/Application Support/librorum"
+heartbeat_interval = 5
+discovery_interval = 10
+# 添加已知节点
+known_nodes = ["windows.local:50052", "192.168.31.92:50052"] 

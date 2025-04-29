@@ -1,0 +1,8 @@
+[build]
+rustflags = ["--cfg", "tokio_allow_from_blocking_fd"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["--cfg", "tokio_allow_from_blocking_fd"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["--cfg", "tokio_allow_from_blocking_fd"] 

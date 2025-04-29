@@ -1,82 +1,58 @@
-# VDFS Core 模块
+# Librorum Core 结构说明
 
-VDFS 核心实现模块，提供分布式文件系统的基础功能。
+本文档描述了 Librorum Core 目录下各个文件和文件夹的功能和结构，便于开发者快速了解项目组织。
 
-## 目录结构
+## 顶级目录结构
 
+- `README.md` - 本文档，项目说明文件
+- `Cargo.toml` - Rust 项目依赖配置文件
+- `build.rs` - Rust 编译前脚本，用于自动生成 gRPC 代码
+- `librorum.toml` - 应用程序默认配置文件
 - `src/` - 源代码目录
-  - `config.rs` - 配置管理
-  - `error.rs` - 错误处理
-  - `fs/` - 文件系统实现
-  - `metadata.rs` - 元数据管理
-  - `proto/` - Protocol Buffer 定义
-  - `service/` - gRPC 服务实现
-  - `sync.rs` - 节点同步
-  - `tests/` - 测试用例
 
-## 主要功能
+## src 目录结构
 
-### 配置管理 (config.rs)
-- 节点配置：定义单个节点的配置参数
-- 集群配置：定义集群级别的配置参数
-- 配置加载：支持从文件或环境变量加载配置
+- `main.rs` - 应用程序入口点，CLI 命令实现
+- `lib.rs` - 库入口点，导出公共模块
+- `daemon.rs` - 守护进程管理模块，实现服务启动、停止等功能
+- `logger.rs` - 日志系统模块，支持日志记录和管理
+- `config.rs` - 配置系统模块，负责读取和解析配置
+- `config/` - 配置相关文件目录
+  - `example.toml` - 示例配置文件
+- `node_manager/` - 节点管理相关模块
+  - `mod.rs` - 节点管理器主模块，负责节点的创建和维护
+  - `node_service.rs` - 节点服务实现，处理节点间通信协议
+  - `mdns_manager.rs` - mDNS 服务发现模块，用于本地网络节点发现
+  - `node_client.rs` - 节点客户端模块，用于与其他节点通信
+- `proto/` - gRPC 协议定义目录
+  - `mod.rs` - Proto 模块导出
+  - `node.proto` - 节点通信协议定义文件
 
-### 错误处理 (error.rs)
-- 自定义错误类型
-- 错误转换
-- 错误处理工具
+## 主要功能模块
 
-### 文件系统 (fs/)
-- 本地文件系统实现
-- 文件操作接口
-- 文件系统监视器
+1. **守护进程系统** (`daemon.rs`)
+   - 实现守护进程管理，支持服务的启动、停止、重启和状态查询
+   - 处理进程间通信和状态管理
 
-### 元数据管理 (metadata.rs)
-- 文件元数据
-- 节点状态
-- 元数据存储
+2. **日志系统** (`logger.rs`)
+   - 实现结构化日志记录
+   - 支持多级日志级别和日志轮转
 
-### 协议定义 (proto/)
-- gRPC 服务定义
-- 消息类型定义
-- 序列化/反序列化
+3. **配置系统** (`config.rs`)
+   - 负责配置文件的读取、解析和验证
+   - 支持默认配置和用户配置的合并
 
-### 服务实现 (service/)
-- gRPC 服务实现
-- 文件操作服务
-- 元数据同步服务
-- 文件传输服务
+4. **节点管理系统** (`node_manager/`)
+   - 管理本地节点和远程节点的连接
+   - 实现节点发现、连接和通信
+   - 通过 mDNS 实现局域网内的节点自动发现
 
-### 节点同步 (sync.rs)
-- 节点状态同步
-- 元数据同步
-- 文件传输
+5. **通信协议** (`proto/`)
+   - 定义节点间通信的 gRPC 协议
+   - 支持节点间数据交换和指令传递
 
-## 测试
+## 编译和构建流程
 
-运行所有测试：
-```bash
-cargo test
-```
-
-运行特定测试：
-```bash
-cargo test test_name
-```
-
-## 使用示例
-
-```rust
-use librorum_core::config::{NodeConfig, ClusterConfig};
-use librorum_core::start_server;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let node_config = NodeConfig::load()?;
-    let cluster_config = ClusterConfig::load()?;
-    
-    start_server(node_config, cluster_config).await?;
-    
-    Ok(())
-}
-``` 
+1. `build.rs` 在编译前自动从 `.proto` 文件生成 Rust 代码
+2. Cargo 处理依赖并编译项目
+3. 编译产物为可执行文件，支持通过 CLI 命令控制

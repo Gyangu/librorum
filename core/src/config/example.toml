@@ -1,0 +1,21 @@
+# librorum 配置文件示例
+
+# 节点前缀，会与设备名结合生成节点ID
+node_prefix = "node"
+
+# 节点绑定地址
+bind_host = "0.0.0.0"
+bind_port = 50051
+
+# 日志级别
+log_level = "info"
+
+# 数据目录
+# 默认使用系统数据目录下的 librorum 文件夹
+# data_dir = "/path/to/data"
+
+# 心跳间隔（秒）
+heartbeat_interval = 5
+
+# 节点发现间隔（秒）
+discovery_interval = 10 
