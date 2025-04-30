@@ -249,25 +249,28 @@ impl NodeManager {
                                 if !is_known {
                                     known_nodes_clone.lock().await.push(node_addr.clone());
                                 }
-                            }
-                            Err(err) => {
-                                tracing::warn!("连接节点 {} 失败: {}", node_addr, err);
-                            }
+                                
+                                // 成功连接日志
+                                tracing::debug!("已成功与节点建立连接: {}", node_addr);
+                            },
+                            Err(e) => {
+                                tracing::warn!("连接节点失败: {} - {}", node_addr, e);
+                                
+                                // TODO: 记录失败次数，在多次失败后从已知节点中移除
+                            },
                         }
                     }
                 }
             }
         });
         
-        // 启动 gRPC 服务器
-        tracing::info!("启动gRPC服务: {}", addr);
+        // 启动gRPC服务器
+        tracing::info!("gRPC服务启动在 {}", addr);
         Server::builder()
             .add_service(node_server)
             .serve(addr)
             .await
-            .with_context(|| format!("启动服务失败: {}", addr))?;
-        
-        Ok(())
+            .with_context(|| "gRPC服务启动失败")
     }
     
     /// 判断是否应该重新尝试连接节点
