@@ -6,7 +6,7 @@ use librorum_core::config::NodeConfig;
 use librorum_core::node_manager::NodeManager;
 use librorum_core::logger;
 use librorum_core::daemon;
-use tracing;
+use tklog;
 
 /// librorum 分布式文件系统命令行工具
 #[derive(Parser)]
@@ -65,6 +65,8 @@ enum Command {
         days: u64,
     },
     
+    /// 显示节点健康状态
+    NodesStatus,
     
     /// 运行服务（内部命令，由守护进程调用）
     #[clap(hide = true)]
@@ -145,6 +147,26 @@ async fn main() -> Result<()> {
             println!("已清理 {} 个旧日志文件", count);
         }
         
+        Command::NodesStatus => {
+            // 获取服务状态，确保服务在运行
+            let status = daemon::daemon_status();
+            if !status.contains("正在运行") {
+                println!("错误: 服务未运行，请先启动服务");
+                return Ok(());
+            }
+            
+            // 尝试获取节点健康状态
+            match daemon::get_nodes_health_status() {
+                Ok(status) => {
+                    println!("节点健康状态:");
+                    println!("{}", status);
+                },
+                Err(e) => {
+                    println!("获取节点健康状态失败: {}", e);
+                }
+            }
+        }
+        
         Command::Run { daemon, config } => {
             // 配置日志
             if let Err(e) = logger::init_logger(&cli.log_level, *daemon) {
@@ -153,58 +175,59 @@ async fn main() -> Result<()> {
             }
             
             // 输出调试信息
-            tracing::info!("==== librorum daemon启动 ====");
-            tracing::info!("当前工作目录: {:?}", std::env::current_dir().unwrap_or_default());
-            tracing::info!("可执行文件: {:?}", std::env::current_exe().unwrap_or_default());
-            tracing::info!("日志级别: {}", cli.log_level);
-            tracing::info!("daemon模式: {}", daemon);
+            tklog::info!("==== librorum daemon启动 ====");
+            tklog::info!("当前工作目录: {}", std::env::current_dir().unwrap_or_default().display());
+            tklog::info!("可执行文件: {}", std::env::current_exe().unwrap_or_default().display());
+            tklog::info!("日志级别: {}", cli.log_level);
+            tklog::info!("daemon模式: {}", daemon);
             
             // 加载配置
             let node_config = match config {
                 Some(config_path) => {
-                    tracing::info!("使用指定的配置文件: {:?}", config_path);
+                    tklog::info!("使用指定的配置文件: {}", config_path.display());
                     NodeConfig::from_file(config_path)
                         .with_context(|| format!("无法加载配置文件: {:?}", config_path))?
                 },
                 None => {
-                    tracing::info!("未指定配置文件，使用自动检测的配置");
+                    tklog::info!("未指定配置文件，使用自动检测的配置");
                     load_config(&cli)?
                 }
             };
             
             // 确保数据目录存在
             if let Err(e) = node_config.create_data_dir() {
-                tracing::error!("创建数据目录失败: {}", e);
+                tklog::error!("创建数据目录失败: {}", e);
                 return Err(e);
             }
             
             // 输出启动信息
-            tracing::info!("====== librorum 服务启动 ======");
-            tracing::info!("配置: {:?}", node_config);
+            tklog::info!("====== librorum 服务启动 ======");
+            let config_str = format!("{:?}", node_config);
+            tklog::info!("配置: {}", config_str);
             
             // 创建节点管理器
-            tracing::info!("创建节点管理器...");
+            tklog::info!("创建节点管理器...");
             let node_manager = NodeManager::with_config(node_config);
             
             // 输出节点信息
-            tracing::info!("节点ID: {}", node_manager.node_id());
-            tracing::info!("绑定地址: {}", node_manager.bind_address());
-            tracing::info!("系统: {}", node_manager.system_info());
+            tklog::info!("节点ID: {}", node_manager.node_id());
+            tklog::info!("绑定地址: {}", node_manager.bind_address());
+            tklog::info!("系统: {}", node_manager.system_info());
             
             // 启动节点服务
-            tracing::info!("启动节点服务...");
+            tklog::info!("启动节点服务...");
             match node_manager.start().await {
                 Ok(_) => {
-                    tracing::info!("节点服务正常退出");
+                    tklog::info!("节点服务正常退出");
                 },
                 Err(e) => {
-                    tracing::error!("节点服务启动失败: {:?}", e);
+                    tklog::error!("节点服务启动失败: {:?}", e);
                     eprintln!("服务启动失败: {}", e);
                     return Err(e);
                 }
             }
             
-            tracing::info!("节点服务已关闭");
+            tklog::info!("节点服务已关闭");
         }
     }
     
@@ -215,15 +238,15 @@ async fn main() -> Result<()> {
 fn load_config(cli: &Cli) -> Result<NodeConfig> {
     if let Some(config_path) = &cli.config {
         // 使用指定的配置文件
-        tracing::info!("使用配置文件: {:?}", config_path);
+        tklog::info!("使用配置文件: {}", config_path.display());
         NodeConfig::from_file(config_path)
     } else if let Some(config_path) = NodeConfig::find_config_file() {
         // 使用自动找到的配置文件
-        tracing::info!("使用自动检测的配置文件: {:?}", config_path);
+        tklog::info!("使用自动检测的配置文件: {}", config_path.display());
         NodeConfig::from_file(config_path)
     } else {
         // 使用默认配置
-        tracing::info!("未找到配置文件，使用默认配置");
+        tklog::info!("未找到配置文件，使用默认配置");
         Ok(NodeConfig::default())
     }
 } 

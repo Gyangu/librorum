@@ -1,135 +1,246 @@
-use anyhow::Result;
-use std::net::UdpSocket;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use tokio::time::Duration;
-use tracing;
+use anyhow::{Context, Result};
+use if_addrs::get_if_addrs;
+use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use std::net::Ipv4Addr;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::task;
 
-/// mDNS发现管理器
-/// 注意：目前的实现是简化版，不依赖具体的mDNS库，仅使用已知节点列表
+/// mDNS服务类型
+const SERVICE_TYPE: &str = "_librvdfs._tcp.local.";
+
+/// mDNS管理器，用于服务发布和发现
 pub struct MdnsManager {
     /// 节点ID
     node_id: String,
-    /// 服务名称
-    service_name: String,
-    /// 端口
+    /// 服务端口
     port: u16,
+    /// mDNS守护进程
+    mdns: Option<Arc<Mutex<ServiceDaemon>>>,
+    /// 是否正在运行服务发现
+    discovery_running: Arc<Mutex<bool>>,
 }
 
 impl MdnsManager {
-    /// 创建一个新的mDNS管理器
+    /// 创建新的mDNS管理器
     pub fn new(node_id: String, port: u16) -> Self {
         Self {
             node_id,
-            service_name: "_librorum._tcp.local".to_string(),
             port,
+            mdns: None,
+            discovery_running: Arc::new(Mutex::new(false)),
         }
     }
-    
+
+    /// 获取本机第一个非回环的IPv4地址
+    fn get_local_ipv4(&self) -> Option<Ipv4Addr> {
+        get_if_addrs().ok().and_then(|interfaces| {
+            interfaces
+                .iter()
+                .filter(|interface| {
+                    // 过滤掉回环接口
+                    if let if_addrs::IfAddr::V4(ref addr) = interface.addr {
+                        !addr.ip.is_loopback()
+                    } else {
+                        false
+                    }
+                })
+                .find_map(|interface| {
+                    if let if_addrs::IfAddr::V4(ref addr) = interface.addr {
+                        Some(addr.ip)
+                    } else {
+                        None
+                    }
+                })
+        })
+    }
+
     /// 注册mDNS服务
     pub fn register(&self) -> Result<()> {
-        // 记录服务注册日志
-        let host_ipv4 = self.get_local_network_ip()?;
-        tracing::info!("注册服务: {}, 节点: {}, 地址: {}:{}", 
-            self.service_name, self.node_id, host_ipv4, self.port);
-        
-        // 简化版实现不实际注册mDNS服务
-        // 仅记录信息并返回成功
-        
-        tracing::info!("成功注册服务（简化模式）");
-        Ok(())
-    }
-    
-    /// 发现网络上的其他节点
-    pub async fn discover(&self, discovered_nodes: Arc<Mutex<Vec<String>>>) -> Result<()> {
-        // 记录发现日志
-        tracing::debug!("开始发现网络中的其他节点...");
-        
-        // 短暂延迟以模拟发现过程
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        
-        // 添加已知的测试节点
-        let test_nodes = self.get_test_nodes();
-        {
-            let mut nodes = discovered_nodes.lock().await;
-            for (id, address) in test_nodes {
-                if !nodes.contains(&address) {
-                    tracing::info!("添加节点: {} 地址: {}", id, address);
-                    nodes.push(address);
+        // 获取主机名
+        let host_name = hostname::get()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        // 获取本机IP地址
+        let ip = self.get_local_ipv4().unwrap_or_else(|| {
+            tracing::warn!("警告: 无法获取本机IP地址，使用127.0.0.1");
+            Ipv4Addr::new(127, 0, 0, 1)
+        });
+
+        // 创建mDNS守护进程
+        let mdns = ServiceDaemon::new().with_context(|| "创建mDNS守护进程失败")?;
+
+        // 服务属性
+        let full_host_name = format!("{}.local.", host_name);
+        let properties = [
+            ("node_id", self.node_id.clone()),
+            ("version", env!("CARGO_PKG_VERSION").to_string()),
+            ("system", self.get_system_info()),
+        ];
+
+        tracing::info!("注册mDNS服务 '{}' 在端口 {}", self.node_id, self.port);
+        tracing::debug!("主机名: {}", full_host_name);
+        tracing::debug!("IP地址: {}", ip);
+
+        // 创建服务信息
+        let service_info = ServiceInfo::new(
+            SERVICE_TYPE,
+            &self.node_id,
+            &full_host_name,
+            &ip.to_string(),
+            self.port,
+            &properties[..],
+        )
+        .with_context(|| "创建服务信息失败")?;
+
+        // 注册服务
+        mdns.register(service_info)
+            .with_context(|| "注册mDNS服务失败")?;
+
+        // 保存mDNS守护进程实例
+        let mdns_arc = Arc::new(Mutex::new(mdns));
+        let self_mdns = self.mdns.clone();
+        match self_mdns {
+            Some(existing_mdns) => {
+                // 如果已存在，替换它
+                let mut locked = existing_mdns.lock().unwrap();
+                *locked = mdns_arc.lock().unwrap().clone();
+            }
+            None => {
+                // 第一次初始化
+                unsafe {
+                    let self_mut = self as *const Self as *mut Self;
+                    (*self_mut).mdns = Some(mdns_arc);
                 }
             }
         }
-        
+
+        tracing::info!("mDNS服务注册成功");
         Ok(())
     }
-    
-    /// 获取测试节点（用于测试跨平台通信）
-    fn get_test_nodes(&self) -> Vec<(String, String)> {
-        let mut nodes = Vec::new();
-        
-        // 公共节点 - 所有平台都添加
-        nodes.push(("local-test-node".to_string(), "127.0.0.1:50051".to_string()));
-        nodes.push(("local-test-node-2".to_string(), "127.0.0.1:50052".to_string()));
-        
-        // 平台特定节点
-        #[cfg(target_os = "macos")]
+
+    /// 启动服务发现
+    pub async fn start_discovery(
+        &self,
+        discovered_callback: impl Fn(String, String, u16) + Send + 'static,
+        removed_callback: impl Fn(String) + Send + 'static,
+    ) -> Result<()> {
+        // 检查是否已经在运行
         {
-            // 在macOS上添加Windows测试节点
-            tracing::debug!("macOS平台：添加Windows测试节点");
-            // 主机名解析方式
-            nodes.push(("windows-host-node".to_string(), "windows.local:50052".to_string()));
-            
-            // 使用可能的IP地址 - 提高连接成功率
-            let possible_windows_ips = [
-                "192.168.31.92", 
-                "192.168.31.93",
-                "192.168.1.102", 
-                "192.168.1.103"
-            ];
-            
-            for (idx, &ip) in possible_windows_ips.iter().enumerate() {
-                let node_id = format!("windows-ip-node-{}", idx + 1);
-                let address = format!("{}:50052", ip);
-                nodes.push((node_id, address));
+            let mut running = self.discovery_running.lock().unwrap();
+            if *running {
+                tracing::info!("mDNS服务发现已经在运行中");
+                return Ok(());
             }
+            *running = true;
         }
-        
+
+        // 创建mDNS守护进程
+        let mdns = ServiceDaemon::new().with_context(|| "创建mDNS服务发现守护进程失败")?;
+
+        // 浏览服务
+        let receiver = mdns
+            .browse(SERVICE_TYPE)
+            .with_context(|| "浏览mDNS服务失败")?;
+
+        tracing::info!("开始服务发现: {}", SERVICE_TYPE);
+
+        // 创建通道用于从tokio任务中接收结果
+        let (tx, mut rx) = mpsc::channel::<(bool, String, String, u16)>(100);
+
+        // 启动后台任务监听mDNS事件
+        let discovery_running = self.discovery_running.clone();
+        task::spawn(async move {
+            while *discovery_running.lock().unwrap() {
+                match receiver.recv_timeout(Duration::from_secs(1)) {
+                    Ok(event) => {
+                        match event {
+                            ServiceEvent::ServiceResolved(info) => {
+                                let fullname = info.get_fullname().to_string();
+                                let hostname = info.get_hostname().to_string();
+                                let port = info.get_port();
+
+                                // 获取节点ID
+                                let node_id = match info.get_property_val_str("node_id") {
+                                    Some(id) => id.to_string(),
+                                    None => fullname.clone(),
+                                };
+
+                                // 获取IP地址
+                                if let Some(addr) = info.get_addresses().iter().next() {
+                                    let ip_str = addr.to_string();
+                                    let service_addr = format!("{}:{}", ip_str, port);
+
+                                    tracing::info!(
+                                        "发现节点: {} ({} - {})",
+                                        node_id,
+                                        service_addr,
+                                        hostname
+                                    );
+
+                                    // 发送发现事件到回调
+                                    let _ = tx.send((true, node_id, service_addr, port)).await;
+                                }
+                            }
+                            ServiceEvent::ServiceRemoved(_, fullname) => {
+                                let node_id = fullname.to_string();
+                                tracing::info!("节点离线: {}", node_id);
+                                // 发送移除事件到回调
+                                let _ = tx.send((false, node_id, String::new(), 0)).await;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(_) => {
+                        // 超时继续
+                        continue;
+                    }
+                }
+            }
+
+            tracing::info!("mDNS服务发现已停止");
+            // 关闭mDNS守护进程
+            if let Err(e) = mdns.shutdown() {
+                tracing::error!("关闭mDNS服务发现失败: {}", e);
+            }
+        });
+
+        // 处理通道消息
+        task::spawn(async move {
+            while let Some((is_discovered, node_id, addr, port)) = rx.recv().await {
+                if is_discovered {
+                    discovered_callback(node_id, addr, port);
+                } else {
+                    removed_callback(node_id);
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    /// 获取系统信息
+    fn get_system_info(&self) -> String {
         #[cfg(target_os = "windows")]
         {
-            // 在Windows上添加macOS测试节点
-            tracing::debug!("Windows平台：添加macOS测试节点");
-            // 主机名解析方式
-            nodes.push(("macos-host-node".to_string(), "gy.local:50051".to_string()));
-            
-            // 使用可能的IP地址 - 提高连接成功率
-            let possible_mac_ips = [
-                "192.168.31.90",
-                "192.168.31.91",
-                "192.168.1.100",
-                "192.168.1.101"
-            ];
-            
-            for (idx, &ip) in possible_mac_ips.iter().enumerate() {
-                let node_id = format!("macos-ip-node-{}", idx + 1);
-                let address = format!("{}:50051", ip);
-                nodes.push((node_id, address));
-            }
+            "Windows".to_string()
         }
-        
-        tracing::debug!("生成的测试节点列表: {:?}", nodes);
-        nodes
+
+        #[cfg(target_os = "macos")]
+        {
+            "macOS".to_string()
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            "Linux".to_string()
+        }
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        {
+            "Unknown".to_string()
+        }
     }
-    
-    /// 获取本地网络IP
-    fn get_local_network_ip(&self) -> Result<String> {
-        // 这个技巧用于获取本地网络接口的IP
-        // 连接一个公网IP（但不实际发送数据），系统会选择合适的网络接口
-        let socket = UdpSocket::bind("0.0.0.0:0")?;
-        socket.connect("8.8.8.8:80")?;
-        let local_addr = socket.local_addr()?;
-        let ip = local_addr.ip().to_string();
-        
-        tracing::debug!("检测到本地网络IP: {}", ip);
-        Ok(ip)
-    }
-} 
+}

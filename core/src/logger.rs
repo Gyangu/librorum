@@ -1,13 +1,13 @@
 use anyhow::{Result, Context};
 use std::path::PathBuf;
 use std::fs;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, fmt, EnvFilter};
-use tracing_appender::rolling::daily;
 use std::io::{self, BufReader, BufRead};
 use std::fs::File;
 use std::sync::Once;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::SystemTime;
 use glob;
+use tklog::{Format, LEVEL, LOG, MODE};
 
 // 确保日志只初始化一次
 static INIT: Once = Once::new();
@@ -87,72 +87,83 @@ pub fn init_logger(log_level: &str, to_file: bool) -> Result<()> {
             }
         }
         
-        let env_filter = EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| log_level.into()),
-        );
+        // 将日志级别字符串转换为 tklog 的 LEVEL
+        let level = match log_level.to_lowercase().as_str() {
+            "trace" => LEVEL::Trace,
+            "debug" => LEVEL::Debug,
+            "info" => LEVEL::Info,
+            "warn" => LEVEL::Warn,
+            "error" => LEVEL::Error,
+            _ => LEVEL::Info, // 默认使用 Info 级别
+        };
         
-        if to_file {
-            // 配置日志轮转
-            let file_appender = daily(log_dir_path(), "librorum");
-            // 使用静态变量保存guard以防止提前释放，会导致日志丢失
-            // 不使用static，直接让guard被析构并不影响正常写入
-            let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-            
-            // 注册日志订阅者
-            match tracing_subscriber::registry()
-                .with(env_filter)
-                .with(fmt::Layer::new().with_writer(non_blocking).with_ansi(false))
-                .try_init() {
-                Ok(_) => {
-                    // 写入测试消息以确保文件被创建并能写入
-                    tracing::info!("日志系统已初始化，输出到文件: {:?}", log_file_path());
-                    INITIALIZED.store(true, Ordering::SeqCst);
-                },
-                Err(e) => eprintln!("初始化日志失败: {:?}", e),
-            }
-        } else {
-            // 设置控制台输出配置
-            #[cfg(windows)]
-            {
-                // Windows平台处理，确保控制台输出正确的中文
-                // 先尝试设置控制台代码页为UTF-8
-                let _ = std::process::Command::new("powershell")
-                    .args(&["-Command", "chcp 65001"])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
+        // 设置日志格式和输出
+        LOG.set_level(level)
+           .set_format(Format::LevelFlag | Format::Time | Format::ShortFileName)
+           .set_formatter("{level}{time} {file}:{message}\n") // 自定义格式，添加换行符
+           .set_console(true); // 总是输出到控制台
+           
+        // 设置彩色输出（仅在控制台显示，文件中无颜色代码）
+        LOG.set_attr_format(|fmt| {
+            // 自定义日志级别格式
+            fmt.set_level_fmt(|level| {
+                match level {
+                    LEVEL::Trace => "[TRACE]",
+                    LEVEL::Debug => "[DEBUG]",
+                    LEVEL::Info => "[INFO]",
+                    LEVEL::Warn => "[WARN]",
+                    LEVEL::Error => "[ERROR]",
+                    LEVEL::Fatal => "[FATAL]",
+                    LEVEL::Off => "",
+                }.to_string()
+            });
+
+            // 设置控制台日志的正文格式（带颜色）
+            fmt.set_console_body_fmt(|level, body| {
+                // 如果body末尾有换行符，保留它并在内容后添加颜色重置
+                let trimmed_body = if body.ends_with('\n') { 
+                    format!("{}{}", &body[..body.len()-1], "\x1b[0m\n") 
+                } else { 
+                    format!("{}\x1b[0m", body) 
+                };
                 
-                // 仅输出到控制台
-                let filter = EnvFilter::new(format!("librorum_core={}", log_level));
-                match tracing_subscriber::registry()
-                    .with(filter)
-                    .with(fmt::Layer::new())
-                    .try_init() {
-                    Ok(_) => {
-                        tracing::info!("日志系统已初始化，输出到控制台 (Windows)");
-                        INITIALIZED.store(true, Ordering::SeqCst);
-                    },
-                    Err(e) => eprintln!("初始化日志失败: {:?}", e),
+                match level {
+                    LEVEL::Trace => format!("\x1b[94m{}", trimmed_body), // 蓝色
+                    LEVEL::Debug => format!("\x1b[36m{}", trimmed_body), // 青色
+                    LEVEL::Info => format!("\x1b[32m{}", trimmed_body),  // 绿色
+                    LEVEL::Warn => format!("\x1b[33m{}", trimmed_body),  // 黄色
+                    LEVEL::Error => format!("\x1b[31m{}", trimmed_body), // 红色
+                    LEVEL::Fatal => format!("\x1b[41m{}", trimmed_body), // 背景红色
+                    LEVEL::Off => body.to_string(),
                 }
-            }
-            
-            #[cfg(not(windows))]
-            {
-                // 仅输出到控制台
-                let filter = EnvFilter::new(format!("librorum_core={}", log_level));
-                match tracing_subscriber::registry()
-                    .with(filter)
-                    .with(fmt::Layer::new())
-                    .try_init() {
-                    Ok(_) => {
-                        tracing::info!("日志系统已初始化，输出到控制台");
-                        tracing::debug!("日志系统开始输出调试信息");
-                        INITIALIZED.store(true, Ordering::SeqCst);
-                    },
-                    Err(e) => eprintln!("初始化日志失败: {:?}", e),
-                }
-            }
+            });
+        });
+        
+        // 如果需要输出到文件
+        if to_file {
+            // 设置按日期和大小混合切割日志文件
+            let log_file = log_dir_path().join("librorum.log").to_string_lossy().to_string();
+            LOG.set_cutmode_by_mixed(
+                &log_file,       // 日志文件名
+                50 * 1024 * 1024, // 50MB 大小上限
+                MODE::DAY,        // 按天切割
+                30,               // 保留30天的日志
+                true              // 压缩备份
+            );
         }
+        
+        // 兼容标准 log API
+        LOG.uselog();
+        
+        // 记录日志系统初始化完成
+        if to_file {
+            let log_path = log_file_path();
+            tklog::info!("日志系统已初始化，输出到文件: {}", log_path.display());
+        } else {
+            tklog::info!("日志系统已初始化，输出到控制台");
+        }
+        
+        INITIALIZED.store(true, Ordering::SeqCst);
     });
     
     Ok(())
@@ -237,9 +248,13 @@ pub fn view_recent_logs(tail: usize) -> Result<String> {
     
     // 按修改时间排序，最新的放前面
     log_files.sort_by(|a, b| {
-        let a_metadata = fs::metadata(a).unwrap();
-        let b_metadata = fs::metadata(b).unwrap();
-        b_metadata.modified().unwrap().cmp(&a_metadata.modified().unwrap())
+        let a_time = fs::metadata(a).ok()
+            .and_then(|m| m.modified().ok())
+            .unwrap_or_else(|| SystemTime::UNIX_EPOCH);
+        let b_time = fs::metadata(b).ok()
+            .and_then(|m| m.modified().ok())
+            .unwrap_or_else(|| SystemTime::UNIX_EPOCH);
+        b_time.cmp(&a_time)
     });
     
     // 如果没有日志文件，返回空结果
@@ -249,20 +264,20 @@ pub fn view_recent_logs(tail: usize) -> Result<String> {
     
     // 读取最新的日志文件
     let latest_log = &log_files[0];
-    let file = File::open(latest_log)?;
+    let file = File::open(latest_log)
+        .with_context(|| format!("无法打开日志文件: {:?}", latest_log))?;
+        
     let reader = BufReader::new(file);
-    
-    // 读取所有行
-    let mut lines = Vec::new();
-    for line in reader.lines() {
-        if let Ok(line) = line {
-            lines.push(line);
-        }
+    let log_lines: Vec<String> = reader.lines()
+        .collect::<io::Result<Vec<String>>>()
+        .with_context(|| format!("读取日志文件失败: {:?}", latest_log))?;
+        
+    // 获取最后 N 行
+    if log_lines.is_empty() {
+        Ok(format!("日志文件为空: {:?}", latest_log))
+    } else if log_lines.len() <= tail {
+        Ok(format!("日志文件: {:?}\n{}", latest_log, log_lines.join("\n")))
+    } else {
+        Ok(format!("日志文件: {:?}\n{}", latest_log, log_lines[log_lines.len() - tail..].join("\n")))
     }
-    
-    // 返回最后的N行
-    let start = if lines.len() > tail { lines.len() - tail } else { 0 };
-    let result = lines[start..].join("\n");
-    
-    Ok(result)
 } 

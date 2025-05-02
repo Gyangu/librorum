@@ -228,17 +228,26 @@ impl NodeClient {
                             if host.contains("gy") || host == "gy.local" {
                                 // 添加已知可能的IP地址
                                 let ips = [
+                                    // 局域网 IP 地址
                                     "192.168.31.90", 
                                     "192.168.31.91", 
                                     "192.168.1.100", 
                                     "192.168.1.101",
+                                    // 备用地址范围
+                                    "192.168.0.100",
+                                    "192.168.0.101",
+                                    "10.0.0.100",
+                                    "10.0.0.101",
                                     "172.16.0.100",
-                                    "10.0.0.100"
+                                    "172.16.0.101",
+                                    // VPN可能使用的地址
+                                    "172.17.0.100",
+                                    "10.8.0.100"
                                 ];
                                 for &ip in &ips {
                                     let fallback = format!("{}:{}", ip, port);
                                     if !addrs.contains(&fallback) {
-                                        tracing::debug!("跨平台适配，尝试IP: {} -> {}", clean_addr, fallback);
+                                        tracing::debug!("跨平台适配，尝试Mac IP: {} -> {}", clean_addr, fallback);
                                         addrs.push(fallback);
                                     }
                                 }
@@ -248,16 +257,63 @@ impl NodeClient {
                             if host.contains("windows") || host == "windows.local" {
                                 // 添加已知可能的IP地址
                                 let ips = [
+                                    // 局域网 IP 地址
                                     "192.168.31.92", 
+                                    "192.168.31.93",
                                     "192.168.1.102",
+                                    "192.168.1.103",
+                                    // 备用地址范围
+                                    "192.168.0.102",
+                                    "192.168.0.103",
+                                    "10.0.0.102",
+                                    "10.0.0.103",
                                     "172.16.0.102",
-                                    "10.0.0.102"
+                                    "172.16.0.103",
+                                    // VPN可能使用的地址
+                                    "172.17.0.102",
+                                    "10.8.0.102"
                                 ];
                                 for &ip in &ips {
                                     let fallback = format!("{}:{}", ip, port);
                                     if !addrs.contains(&fallback) {
-                                        tracing::debug!("跨平台适配，尝试IP: {} -> {}", clean_addr, fallback);
+                                        tracing::debug!("跨平台适配，尝试Windows IP: {} -> {}", clean_addr, fallback);
                                         addrs.push(fallback);
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // 尝试常见的局域网地址
+                        if addrs.len() <= 1 { // 如果只有原始地址
+                            // 使用主机名的最后部分作为设备标识符
+                            let host_parts: Vec<&str> = host.split('.').collect();
+                            let device_id = host_parts.first().unwrap_or(&host);
+                            
+                            // 尝试常见的局域网IP段
+                            let common_networks = [
+                                "192.168.31.", "192.168.1.", "192.168.0.", 
+                                "10.0.0.", "172.16.0.", "172.17.0."
+                            ];
+                            
+                            for &network in &common_networks {
+                                // 根据设备标识符生成可能的IP地址
+                                let possible_hosts = if device_id.contains("win") || device_id.contains("windows") {
+                                    // Windows设备可能的IP尾数
+                                    vec!["102", "103", "104", "105", "112"]
+                                } else if device_id.contains("mac") || device_id.contains("gy") {
+                                    // Mac设备可能的IP尾数
+                                    vec!["100", "101", "110", "111", "90", "91"]
+                                } else {
+                                    // 通用设备 - 常见IP范围
+                                    vec!["100", "101", "102", "103", "104", "105", "110", "111", "112"]
+                                };
+                                
+                                for suffix in &possible_hosts {
+                                    let ip = format!("{}{}", network, suffix);
+                                    let addr_str = format!("{}:{}", ip, port);
+                                    if !addrs.contains(&addr_str) {
+                                        tracing::debug!("智能猜测IP: {} -> {}", device_id, addr_str);
+                                        addrs.push(addr_str);
                                     }
                                 }
                             }
@@ -273,7 +329,76 @@ impl NodeClient {
             addrs.push(remote_addr.to_string());
         }
         
-        tracing::debug!("最终解析的地址列表: {:?}", addrs);
+        // 对地址进行智能排序，优先尝试更可能成功的地址
+        self.sort_addresses(&mut addrs).await;
+        
+        tracing::debug!("最终解析的地址列表 ({} 个): {:?}", addrs.len(), addrs);
         Ok(addrs)
+    }
+    
+    /// 智能排序地址列表，优先尝试更可能成功的地址
+    async fn sort_addresses(&self, addrs: &mut Vec<String>) {
+        // 本地系统信息
+        let is_windows = self.system_info.to_lowercase().contains("windows");
+        let is_macos = self.system_info.to_lowercase().contains("macos");
+        
+        // 根据系统类型对地址进行排序
+        addrs.sort_by(|a, b| {
+            let a_score = self.calculate_address_priority(a, is_windows, is_macos);
+            let b_score = self.calculate_address_priority(b, is_windows, is_macos);
+            // 降序排序 - 分数高的排在前面
+            b_score.cmp(&a_score)
+        });
+    }
+    
+    /// 计算地址优先级分数
+    fn calculate_address_priority(&self, addr: &str, is_windows: bool, is_macos: bool) -> u32 {
+        let mut score = 0;
+        
+        // 本地地址优先级最高
+        if addr.starts_with("127.0.0.1:") || addr.starts_with("localhost:") {
+            score += 1000;
+        }
+        
+        // 完全匹配的域名优先
+        if addr.contains(".local:") {
+            score += 800;
+        }
+        
+        // 特定平台优先级
+        if is_windows {
+            // Windows上优先尝试Mac的地址
+            if addr.contains("192.168.31.90:") || addr.contains("192.168.31.91:") {
+                score += 500;
+            } else if addr.contains("192.168.1.100:") || addr.contains("192.168.1.101:") {
+                score += 400;
+            } else if addr.contains("gy.local:") {
+                score += 300;
+            } 
+        } else if is_macos {
+            // Mac上优先尝试Windows的地址
+            if addr.contains("192.168.31.92:") || addr.contains("192.168.31.93:") {
+                score += 500;
+            } else if addr.contains("192.168.1.102:") || addr.contains("192.168.1.103:") {
+                score += 400;
+            } else if addr.contains("windows.local:") {
+                score += 300;
+            }
+        }
+        
+        // 特定网段优先级
+        if addr.starts_with("192.168.31.") {
+            score += 50;
+        } else if addr.starts_with("192.168.1.") {
+            score += 40;
+        } else if addr.starts_with("192.168.0.") {
+            score += 30;
+        } else if addr.starts_with("10.0.0.") {
+            score += 20;
+        } else if addr.starts_with("172.16.0.") || addr.starts_with("172.17.0.") {
+            score += 10;
+        }
+        
+        score
     }
 } 

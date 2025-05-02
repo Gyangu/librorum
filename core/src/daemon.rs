@@ -475,9 +475,26 @@ pub fn daemon_running() -> bool {
 
     match fs::read_to_string(&pid_file) {
         Ok(pid_str) => {
-            if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                // 检查进程是否存在
-                unsafe { libc::kill(pid, 0) == 0 }
+            // 修复可能的额外字符，只保留数字
+            let clean_pid_str: String = pid_str.chars().filter(|c| c.is_ascii_digit()).collect();
+            
+            if let Ok(pid) = clean_pid_str.parse::<i32>() {
+                // 使用ps命令检查进程是否存在，更加可靠
+                let output = Command::new("ps")
+                    .args(&["-p", &pid.to_string()])
+                    .output();
+
+                match output {
+                    Ok(output) => {
+                        let exit_status = output.status.code().unwrap_or(1);
+                        // ps命令成功且输出中包含PID，说明进程存在
+                        exit_status == 0 && String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
+                    }
+                    Err(_) => {
+                        // 如果ps命令失败，使用老方法尝试
+                        unsafe { libc::kill(pid, 0) == 0 }
+                    }
+                }
             } else {
                 false
             }
@@ -562,7 +579,93 @@ pub fn daemon_status() -> String {
     }
 }
 
-/// 查看日志
+/// 查看服务日志
 pub fn view_logs(tail: usize) -> Result<String> {
     logger::view_recent_logs(tail)
+}
+
+/// 获取节点健康状态信息
+pub fn get_nodes_health_status() -> Result<String> {
+    // 确保PID文件存在，服务正在运行
+    if !daemon_running() {
+        return Err(anyhow::anyhow!("服务未运行"));
+    }
+    
+    // 获取最近的日志
+    let logs = logger::view_recent_logs(300)?;
+    
+    // 提取节点健康状态报告
+    let mut health_status = String::new();
+    let mut has_report = false;
+    
+    // 寻找最近的节点健康状态报告
+    for line in logs.lines().rev() {
+        if line.contains("节点健康状态报告:") {
+            has_report = true;
+            health_status.push_str(line);
+            health_status.push('\n');
+            
+            // 继续读取报告的所有行
+            for report_line in logs.lines().rev().skip(logs.lines().rev().position(|l| l == line).unwrap() + 1) {
+                if report_line.contains("发现 ") && report_line.contains(" 个节点") {
+                    health_status.push_str(report_line);
+                    health_status.push('\n');
+                } else if report_line.trim().starts_with("- ") || report_line.contains("节点详情:") {
+                    health_status.push_str(report_line);
+                    health_status.push('\n');
+                } else if !report_line.trim().is_empty() && !report_line.contains("===") && !report_line.contains("INFO") {
+                    // 如果遇到不相关的内容，停止读取
+                    break;
+                }
+            }
+            
+            break;
+        } else if line.contains("接收心跳请求统计:") {
+            // 也收集心跳请求统计信息
+            if !has_report {
+                health_status.push_str("接收心跳请求统计:\n");
+                
+                // 查找后续几行相关信息
+                for stat_line in logs.lines().rev().skip(logs.lines().rev().position(|l| l == line).unwrap() + 1) {
+                    if stat_line.contains("累计接收") || stat_line.contains("连接成功") {
+                        health_status.push_str(stat_line);
+                        health_status.push('\n');
+                    } else if !stat_line.trim().is_empty() && !stat_line.contains("===") && !stat_line.contains("INFO") {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    // 如果没有找到健康状态报告，查找节点连接日志
+    if !has_report && health_status.is_empty() {
+        // 查找最近的连接日志
+        let mut connections = Vec::new();
+        for line in logs.lines() {
+            if line.contains("到节点成功:") || line.contains("心跳发送失败:") {
+                connections.push(line.to_string());
+            }
+        }
+        
+        // 只保留最近的20条连接记录
+        if connections.len() > 20 {
+            let start_idx = connections.len() - 20;
+            connections = connections.split_off(start_idx);
+        }
+        
+        if !connections.is_empty() {
+            health_status.push_str("最近节点连接日志:\n");
+            for conn in &connections {
+                health_status.push_str(conn);
+                health_status.push('\n');
+            }
+        } else {
+            health_status.push_str("未找到节点健康状态报告或连接日志。\n");
+            health_status.push_str("可能服务刚启动，还未生成任何节点状态报告。\n");
+            health_status.push_str("请等待几分钟后重试，或查看完整日志。\n");
+        }
+    }
+    
+    Ok(health_status)
 }

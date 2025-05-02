@@ -5,4 +5,3 @@ log_level = "info"
 data_dir = "/Users/gy/Library/Application Support/librorum"
 heartbeat_interval = 5
 discovery_interval = 10
-known_nodes = []
