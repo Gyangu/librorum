@@ -3,7 +3,7 @@ description:
 globs: 
 alwaysApply: false
 ---
-用这种方案生成测试用例
+用这种方案生成测试用例 放在 examples 文件夹下，在创建文件钱你先看一下目录结构
 
 ```
 #!/usr/bin/env rust-script

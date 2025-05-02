@@ -1,11 +1,12 @@
-use crate::proto::node::{HeartbeatRequest, HeartbeatResponse};
 use crate::proto::node::node_service_server::NodeService;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use tonic::{Request, Response, Status};
+use crate::proto::node::{HeartbeatRequest, HeartbeatResponse};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use tracing::info;
+use tokio::sync::Mutex;
+use tonic::{Request, Response, Status};
 
 /// 节点信息结构体
 #[derive(Debug, Clone)]
@@ -59,44 +60,44 @@ impl NodeServiceImpl {
             nodes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
-    
+
     /// 获取所有已知节点的连接状态
     pub async fn get_all_nodes(&self) -> Vec<NodeConnection> {
         let nodes = self.nodes.lock().await;
         nodes.values().cloned().collect()
     }
-    
+
     /// 获取特定节点的连接状态
     pub async fn get_node(&self, node_id: &str) -> Option<NodeConnection> {
         let nodes = self.nodes.lock().await;
-        nodes.values()
-            .find(|n| n.info.id == node_id)
-            .cloned()
+        nodes.values().find(|n| n.info.id == node_id).cloned()
     }
-    
+
     /// 获取节点连接状态摘要
     pub async fn get_connection_summary(&self) -> String {
         let nodes = self.nodes.lock().await;
-        
+
         if nodes.is_empty() {
             return "未发现任何连接过的节点".to_string();
         }
-        
+
         let mut online_count = 0;
         let mut offline_count = 0;
-        
+
         for conn in nodes.values() {
             match conn.status {
                 NodeConnectionStatus::Online => online_count += 1,
                 NodeConnectionStatus::Offline => offline_count += 1,
             }
         }
-        
+
         let mut summary = format!(
             "共有 {} 个连接过的节点，在线: {}，离线: {}\n",
-            nodes.len(), online_count, offline_count
+            nodes.len(),
+            online_count,
+            offline_count
         );
-        
+
         // 添加节点详情
         summary.push_str("节点详情:\n");
         for conn in nodes.values() {
@@ -104,21 +105,26 @@ impl NodeServiceImpl {
                 NodeConnectionStatus::Online => "在线",
                 NodeConnectionStatus::Offline => "离线",
             };
-            
+
             let last_seen_mins = (Utc::now().timestamp() - conn.last_connection) / 60;
             let last_seen = if last_seen_mins == 0 {
                 "刚刚".to_string()
             } else {
                 format!("{} 分钟前", last_seen_mins)
             };
-            
+
             summary.push_str(&format!(
                 "  - {}: {} | {} | 系统: {} | 最后连接: {} | 成功: {} | 失败: {}\n",
-                conn.info.address, conn.info.id, status_str, conn.info.system, 
-                last_seen, conn.success_count, conn.failure_count
+                conn.info.address,
+                conn.info.id,
+                status_str,
+                conn.info.system,
+                last_seen,
+                conn.success_count,
+                conn.failure_count
             ));
         }
-        
+
         summary
     }
 }
@@ -131,7 +137,7 @@ impl NodeService for NodeServiceImpl {
     ) -> Result<Response<HeartbeatResponse>, Status> {
         let req = request.into_inner();
         let timestamp = Utc::now().timestamp();
-        
+
         // 记录来自其他节点的心跳
         let remote_node_info = NodeInfo {
             id: req.node_id.clone(),
@@ -139,10 +145,10 @@ impl NodeService for NodeServiceImpl {
             system: req.system_info.clone(),
             last_seen: timestamp,
         };
-        
+
         // 更新节点连接列表
         let mut nodes = self.nodes.lock().await;
-        
+
         // 检查是否已存在该节点
         if let Some(conn) = nodes.get_mut(&req.address) {
             // 更新现有节点信息
@@ -150,8 +156,8 @@ impl NodeService for NodeServiceImpl {
             conn.status = NodeConnectionStatus::Online;
             conn.last_connection = timestamp;
             conn.success_count += 1;
-            
-            tracing::info!("更新节点连接: {} ({})", req.node_id, req.address);
+
+            info!("更新节点连接: {} ({})", req.node_id, req.address);
         } else {
             // 添加新节点
             let new_conn = NodeConnection {
@@ -161,11 +167,11 @@ impl NodeService for NodeServiceImpl {
                 success_count: 1,
                 failure_count: 0,
             };
-            
+
             nodes.insert(req.address.clone(), new_conn);
-            tracing::info!("发现新节点连接: {} ({})", req.node_id, req.address);
+            info!("发现新节点连接: {} ({})", req.node_id, req.address);
         }
-        
+
         // 构造响应
         let reply = HeartbeatResponse {
             node_id: self.node_id.clone(),
@@ -174,15 +180,15 @@ impl NodeService for NodeServiceImpl {
             timestamp,
             status: true,
         };
-        
+
         // 每收到10个心跳请求打印一次连接摘要
         static HEARTBEAT_COUNTER: AtomicU32 = AtomicU32::new(0);
         let counter = HEARTBEAT_COUNTER.fetch_add(1, Ordering::SeqCst) + 1;
-        
+
         if counter % 10 == 0 {
             let mut conn_summary = "Heartbeat request statistics:\n".to_string();
             conn_summary.push_str(&format!("Total heartbeat requests received: {}\n", counter));
-            
+
             // Summarize connection success/failure counts for all nodes
             let mut total_success = 0;
             let mut total_failure = 0;
@@ -190,13 +196,15 @@ impl NodeService for NodeServiceImpl {
                 total_success += conn.success_count;
                 total_failure += conn.failure_count;
             }
-            
-            conn_summary.push_str(&format!("总连接成功: {}, 总连接失败: {}\n", 
-                                          total_success, total_failure));
-                                          
-            tracing::info!("{}", conn_summary);
+
+            conn_summary.push_str(&format!(
+                "总连接成功: {}, 总连接失败: {}\n",
+                total_success, total_failure
+            ));
+
+            info!("{}", conn_summary);
         }
-        
+
         Ok(Response::new(reply))
     }
-} 
+}

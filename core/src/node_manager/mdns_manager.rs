@@ -6,9 +6,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task;
+use log::{info, warn, error, debug};
 
 /// mDNS服务类型
-const SERVICE_TYPE: &str = "_librvdfs._tcp.local.";
+const SERVICE_TYPE: &str = "_librorum._tcp.local.";
 
 /// mDNS管理器，用于服务发布和发现
 pub struct MdnsManager {
@@ -65,7 +66,7 @@ impl MdnsManager {
 
         // 获取本机IP地址
         let ip = self.get_local_ipv4().unwrap_or_else(|| {
-            tracing::warn!("警告: 无法获取本机IP地址，使用127.0.0.1");
+            warn!("警告: 无法获取本机IP地址，使用127.0.0.1");
             Ipv4Addr::new(127, 0, 0, 1)
         });
 
@@ -80,9 +81,9 @@ impl MdnsManager {
             ("system", self.get_system_info()),
         ];
 
-        tracing::info!("注册mDNS服务 '{}' 在端口 {}", self.node_id, self.port);
-        tracing::debug!("主机名: {}", full_host_name);
-        tracing::debug!("IP地址: {}", ip);
+        info!("注册mDNS服务 '{}' 在端口 {}", self.node_id, self.port);
+        debug!("主机名: {}", full_host_name);
+        debug!("IP地址: {}", ip);
 
         // 创建服务信息
         let service_info = ServiceInfo::new(
@@ -117,7 +118,7 @@ impl MdnsManager {
             }
         }
 
-        tracing::info!("mDNS服务注册成功");
+        info!("mDNS服务注册成功");
         Ok(())
     }
 
@@ -131,7 +132,7 @@ impl MdnsManager {
         {
             let mut running = self.discovery_running.lock().unwrap();
             if *running {
-                tracing::info!("mDNS服务发现已经在运行中");
+                info!("mDNS服务发现已经在运行中");
                 return Ok(());
             }
             *running = true;
@@ -145,13 +146,14 @@ impl MdnsManager {
             .browse(SERVICE_TYPE)
             .with_context(|| "浏览mDNS服务失败")?;
 
-        tracing::info!("开始服务发现: {}", SERVICE_TYPE);
+        info!("开始服务发现: {}", SERVICE_TYPE);
 
         // 创建通道用于从tokio任务中接收结果
         let (tx, mut rx) = mpsc::channel::<(bool, String, String, u16)>(100);
 
         // 启动后台任务监听mDNS事件
         let discovery_running = self.discovery_running.clone();
+        let own_node_id = self.node_id.clone();
         task::spawn(async move {
             while *discovery_running.lock().unwrap() {
                 match receiver.recv_timeout(Duration::from_secs(1)) {
@@ -168,12 +170,21 @@ impl MdnsManager {
                                     None => fullname.clone(),
                                 };
 
-                                // 获取IP地址
-                                if let Some(addr) = info.get_addresses().iter().next() {
+                                // 过滤掉当前节点自身
+                                if node_id == own_node_id {
+                                    debug!("忽略自身节点: {}", node_id);
+                                    continue;
+                                }
+
+                                // 获取IP地址 - 只处理IPv4地址
+                                if let Some(addr) = info.get_addresses().iter().find(|addr| {
+                                    // 检查地址是否为IPv4格式（不包含冒号）
+                                    !addr.to_string().contains(':')
+                                }) {
                                     let ip_str = addr.to_string();
                                     let service_addr = format!("{}:{}", ip_str, port);
 
-                                    tracing::info!(
+                                    info!(
                                         "发现节点: {} ({} - {})",
                                         node_id,
                                         service_addr,
@@ -182,11 +193,13 @@ impl MdnsManager {
 
                                     // 发送发现事件到回调
                                     let _ = tx.send((true, node_id, service_addr, port)).await;
+                                } else {
+                                    debug!("节点 {} 无可用的IPv4地址，忽略", node_id);
                                 }
                             }
                             ServiceEvent::ServiceRemoved(_, fullname) => {
                                 let node_id = fullname.to_string();
-                                tracing::info!("节点离线: {}", node_id);
+                                info!("节点离线: {}", node_id);
                                 // 发送移除事件到回调
                                 let _ = tx.send((false, node_id, String::new(), 0)).await;
                             }
@@ -200,10 +213,10 @@ impl MdnsManager {
                 }
             }
 
-            tracing::info!("mDNS服务发现已停止");
+            info!("mDNS服务发现已停止");
             // 关闭mDNS守护进程
             if let Err(e) = mdns.shutdown() {
-                tracing::error!("关闭mDNS服务发现失败: {}", e);
+                error!("关闭mDNS服务发现失败: {}", e);
             }
         });
 
@@ -211,9 +224,13 @@ impl MdnsManager {
         task::spawn(async move {
             while let Some((is_discovered, node_id, addr, port)) = rx.recv().await {
                 if is_discovered {
+                    debug!("准备调用发现回调: 节点ID={}, 地址={}, 端口={}", node_id, addr, port);
                     discovered_callback(node_id, addr, port);
+                    debug!("发现回调已调用");
                 } else {
+                    debug!("准备调用移除回调: 节点ID={}", node_id);
                     removed_callback(node_id);
+                    debug!("移除回调已调用");
                 }
             }
         });

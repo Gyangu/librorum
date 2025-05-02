@@ -1,6 +1,6 @@
 use crate::config::NodeConfig;
 use crate::logger;
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -88,7 +88,7 @@ fn service_main(_arguments: Vec<OsString>) {
     let status_handle = match service_control_handler::register(SERVICE_NAME, event_handler) {
         Ok(handle) => handle,
         Err(e) => {
-            tracing::error!("无法注册服务控制处理器: {:?}", e);
+            error!("无法注册服务控制处理器: {:?}", e);
             return;
         }
     };
@@ -105,7 +105,7 @@ fn service_main(_arguments: Vec<OsString>) {
     };
 
     if let Err(e) = status_handle.set_service_status(next_status) {
-        tracing::error!("无法设置服务状态: {:?}", e);
+        error!("无法设置服务状态: {:?}", e);
         return;
     }
 
@@ -212,22 +212,22 @@ pub fn start_daemon(config: &NodeConfig) -> Result<()> {
     #[cfg(windows)]
     {
         let config_str = config_file.to_string_lossy();
-        
+
         // 在Windows上使用CreateProcess API启动进程
         use std::os::windows::process::CommandExt;
         const DETACHED_PROCESS: u32 = 0x00000008;
-        
+
         let child = Command::new(&executable)
             .args(["run", "--daemon", "--config", &config_str])
             .creation_flags(DETACHED_PROCESS)
             .spawn()
             .with_context(|| "无法启动服务进程")?;
-        
+
         // 将PID保存到文件
         let pid = child.id();
         let mut pid_file = fs::File::create(pid_file_path())?;
         pid_file.write_all(pid.to_string().as_bytes())?;
-        
+
         println!("Librorum 服务已启动（后台进程，PID: {}）", pid);
         Ok(())
     }
@@ -477,18 +477,17 @@ pub fn daemon_running() -> bool {
         Ok(pid_str) => {
             // 修复可能的额外字符，只保留数字
             let clean_pid_str: String = pid_str.chars().filter(|c| c.is_ascii_digit()).collect();
-            
+
             if let Ok(pid) = clean_pid_str.parse::<i32>() {
                 // 使用ps命令检查进程是否存在，更加可靠
-                let output = Command::new("ps")
-                    .args(&["-p", &pid.to_string()])
-                    .output();
+                let output = Command::new("ps").args(&["-p", &pid.to_string()]).output();
 
                 match output {
                     Ok(output) => {
                         let exit_status = output.status.code().unwrap_or(1);
                         // ps命令成功且输出中包含PID，说明进程存在
-                        exit_status == 0 && String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
+                        exit_status == 0
+                            && String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
                     }
                     Err(_) => {
                         // 如果ps命令失败，使用老方法尝试
@@ -590,54 +589,69 @@ pub fn get_nodes_health_status() -> Result<String> {
     if !daemon_running() {
         return Err(anyhow::anyhow!("服务未运行"));
     }
-    
+
     // 获取最近的日志
     let logs = logger::view_recent_logs(300)?;
-    
+
     // 提取节点健康状态报告
     let mut health_status = String::new();
     let mut has_report = false;
-    
+
     // 寻找最近的节点健康状态报告
     for line in logs.lines().rev() {
         if line.contains("节点健康状态报告:") {
             has_report = true;
             health_status.push_str(line);
             health_status.push('\n');
-            
+
             // 继续读取报告的所有行
-            for report_line in logs.lines().rev().skip(logs.lines().rev().position(|l| l == line).unwrap() + 1) {
+            for report_line in logs
+                .lines()
+                .rev()
+                .skip(logs.lines().rev().position(|l| l == line).unwrap() + 1)
+            {
                 if report_line.contains("发现 ") && report_line.contains(" 个节点") {
                     health_status.push_str(report_line);
                     health_status.push('\n');
-                } else if report_line.trim().starts_with("- ") || report_line.contains("节点详情:") {
+                } else if report_line.trim().starts_with("- ") || report_line.contains("节点详情:")
+                {
                     health_status.push_str(report_line);
                     health_status.push('\n');
-                } else if !report_line.trim().is_empty() && !report_line.contains("===") && !report_line.contains("INFO") {
+                } else if !report_line.trim().is_empty()
+                    && !report_line.contains("===")
+                    && !report_line.contains("INFO")
+                {
                     // 如果遇到不相关的内容，停止读取
                     break;
                 }
             }
-            
+
             break;
         } else if line.contains("接收心跳请求统计:") {
             // 也收集心跳请求统计信息
             if !has_report {
                 health_status.push_str("接收心跳请求统计:\n");
-                
+
                 // 查找后续几行相关信息
-                for stat_line in logs.lines().rev().skip(logs.lines().rev().position(|l| l == line).unwrap() + 1) {
+                for stat_line in logs
+                    .lines()
+                    .rev()
+                    .skip(logs.lines().rev().position(|l| l == line).unwrap() + 1)
+                {
                     if stat_line.contains("累计接收") || stat_line.contains("连接成功") {
                         health_status.push_str(stat_line);
                         health_status.push('\n');
-                    } else if !stat_line.trim().is_empty() && !stat_line.contains("===") && !stat_line.contains("INFO") {
+                    } else if !stat_line.trim().is_empty()
+                        && !stat_line.contains("===")
+                        && !stat_line.contains("INFO")
+                    {
                         break;
                     }
                 }
             }
         }
     }
-    
+
     // 如果没有找到健康状态报告，查找节点连接日志
     if !has_report && health_status.is_empty() {
         // 查找最近的连接日志
@@ -647,13 +661,13 @@ pub fn get_nodes_health_status() -> Result<String> {
                 connections.push(line.to_string());
             }
         }
-        
+
         // 只保留最近的20条连接记录
         if connections.len() > 20 {
             let start_idx = connections.len() - 20;
             connections = connections.split_off(start_idx);
         }
-        
+
         if !connections.is_empty() {
             health_status.push_str("最近节点连接日志:\n");
             for conn in &connections {
@@ -666,6 +680,6 @@ pub fn get_nodes_health_status() -> Result<String> {
             health_status.push_str("请等待几分钟后重试，或查看完整日志。\n");
         }
     }
-    
+
     Ok(health_status)
 }

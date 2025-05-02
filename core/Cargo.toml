@@ -16,9 +16,6 @@ futures = "0.3"
 async-trait = "0.1"
 thiserror = "1.0.40"
 anyhow = "1.0"
-tracing = "0.1.37"
-tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
-tracing-appender = "0.2.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 config = "0.13"
@@ -43,8 +40,12 @@ daemonize = { version = "0.5.0", optional = true }
 windows-service = { version = "0.8.0", optional = true }
 libc = "0.2"
 glob = "0.3"
-tklog = "0.2.9"
-log = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "time"] }
+tracing-appender = "0.2"
+time = { version = "0.3", features = ["formatting"] }
+log = { version = "0.4", features = ["std"] }
+tracing-log = "0.2"
 mdns-sd = "0.13.8"
 if-addrs = "0.10"
 

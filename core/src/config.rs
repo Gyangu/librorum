@@ -1,8 +1,9 @@
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
+use dirs;
 use serde::{Deserialize, Serialize};
+use tracing::info;
 use std::fs;
 use std::path::{Path, PathBuf};
-use dirs;
 
 /// 节点配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -10,31 +11,31 @@ pub struct NodeConfig {
     /// 节点标识前缀，会与设备名结合生成节点ID
     #[serde(default = "default_node_prefix")]
     pub node_prefix: String,
-    
+
     /// 节点监听地址，默认为 0.0.0.0
     #[serde(default = "default_bind_host")]
     pub bind_host: String,
-    
+
     /// 节点监听端口，默认为 50051
     #[serde(default = "default_bind_port")]
     pub bind_port: u16,
-    
+
     /// 日志级别
     #[serde(default = "default_log_level")]
     pub log_level: String,
-    
+
     /// 数据目录
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,
-    
+
     /// 心跳间隔，单位为秒，默认为 5 秒
     #[serde(default = "default_heartbeat_interval")]
     pub heartbeat_interval: u64,
-    
+
     /// 发现间隔，单位为秒，默认为 10 秒
     #[serde(default = "default_discovery_interval")]
     pub discovery_interval: u64,
-    
+
     /// 已知节点列表
     #[serde(default = "default_known_nodes")]
     pub known_nodes: Vec<String>,
@@ -95,101 +96,99 @@ impl NodeConfig {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("无法读取配置文件: {:?}", path.as_ref()))?;
-            
+
         let config: NodeConfig = toml::from_str(&content)
             .with_context(|| format!("无法解析配置文件: {:?}", path.as_ref()))?;
-            
+
         Ok(config)
     }
-    
+
     /// 保存配置到文件
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         // 确保目录存在
         if let Some(parent) = path.as_ref().parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("无法创建目录: {:?}", parent))?;
+            fs::create_dir_all(parent).with_context(|| format!("无法创建目录: {:?}", parent))?;
         }
-        
+
         // 序列化并保存
-        let content = toml::to_string_pretty(self)
-            .with_context(|| "无法序列化配置")?;
-            
+        let content = toml::to_string_pretty(self).with_context(|| "无法序列化配置")?;
+
         fs::write(&path, content)
             .with_context(|| format!("无法写入配置文件: {:?}", path.as_ref()))?;
-            
+
         Ok(())
     }
-    
+
     /// 获取绑定地址
     pub fn bind_address(&self) -> String {
         format!("{}:{}", self.bind_host, self.bind_port)
     }
-    
+
     /// 创建数据目录
     pub fn create_data_dir(&self) -> Result<()> {
         fs::create_dir_all(&self.data_dir)
             .with_context(|| format!("无法创建数据目录: {:?}", self.data_dir))?;
         Ok(())
     }
-    
+
     /// 尝试查找配置文件
     pub fn find_config_file() -> Option<PathBuf> {
         // 1. 当前目录下的librorum.toml
         let current_dir = Path::new("librorum.toml");
         if current_dir.exists() {
-            tracing::info!("使用自动检测的配置文件: {:?}", current_dir);
+            info!("使用自动检测的配置文件: {}", current_dir.display());
             return Some(current_dir.to_path_buf());
         }
-        
+
         // 2. 当前目录下的windows专用配置
         #[cfg(windows)]
         {
             let windows_config = Path::new("librorum-windows.toml");
             if windows_config.exists() {
-                tracing::info!("使用Windows专用配置文件: {:?}", windows_config);
+                info!("使用Windows专用配置文件: {}", windows_config.display());
                 return Some(windows_config.to_path_buf());
             }
         }
-        
+
         // 3. 当前目录下的mac专用配置
         #[cfg(target_os = "macos")]
         {
             let mac_config = Path::new("librorum-mac.toml");
             if mac_config.exists() {
-                tracing::info!("使用macOS专用配置文件: {:?}", mac_config);
+                info!("使用macOS专用配置文件: {}", mac_config.display());
                 return Some(mac_config.to_path_buf());
             }
         }
-        
+
         // 4. 用户配置目录
         if let Some(config_dir) = dirs::config_dir() {
             let user_config = config_dir.join("librorum").join("config.toml");
             if user_config.exists() {
-                tracing::info!("使用用户配置目录配置文件: {:?}", user_config);
+                info!("使用用户配置目录配置文件: {}", user_config.display());
                 return Some(user_config);
             }
         }
-        
+
         // 5. 系统配置目录
         #[cfg(not(windows))]
         {
             let system_config = Path::new("/etc/librorum/config.toml");
             if system_config.exists() {
-                tracing::info!("使用系统配置目录配置文件: {:?}", system_config);
+                info!("使用系统配置目录配置文件: {}", system_config.display());
                 return Some(system_config.to_path_buf());
             }
         }
-        
+
         #[cfg(windows)]
         {
             // Windows系统目录
             let system_config = Path::new("C:\\ProgramData\\librorum\\config.toml");
             if system_config.exists() {
-                tracing::info!("使用Windows系统配置目录配置文件: {:?}", system_config);
+                info!("使用Windows系统配置目录配置文件: {}", system_config.display());
                 return Some(system_config.to_path_buf());
             }
         }
-        
+
         None
     }
-} 
+}

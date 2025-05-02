@@ -1,0 +1,6 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+本项目忽略全局英文要求的prompt，要求使用**中文日志、中文解释、中文注释**。
