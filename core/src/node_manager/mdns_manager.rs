@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task;
-use log::{info, warn, error, debug};
+use tracing::{info, warn, error, debug};
 
 /// mDNS服务类型
 const SERVICE_TYPE: &str = "_librorum._tcp.local.";
@@ -192,7 +192,14 @@ impl MdnsManager {
                                     );
 
                                     // 发送发现事件到回调
-                                    let _ = tx.send((true, node_id, service_addr, port)).await;
+                                    match tx.send((true, node_id.clone(), service_addr.clone(), port)).await {
+                                        Ok(_) => {
+                                            info!("发送发现事件到回调成功: 节点ID={}, 地址={}, 端口={}", node_id, service_addr, port);
+                                        },
+                                        Err(e) => {
+                                            error!("发送发现事件到回调失败: 节点ID={}, 地址={}, 端口={}, 错误: {:?}", node_id, service_addr, port, e);
+                                        }
+                                    }
                                 } else {
                                     debug!("节点 {} 无可用的IPv4地址，忽略", node_id);
                                 }
@@ -222,15 +229,54 @@ impl MdnsManager {
 
         // 处理通道消息
         task::spawn(async move {
-            while let Some((is_discovered, node_id, addr, port)) = rx.recv().await {
-                if is_discovered {
-                    debug!("准备调用发现回调: 节点ID={}, 地址={}, 端口={}", node_id, addr, port);
-                    discovered_callback(node_id, addr, port);
-                    debug!("发现回调已调用");
-                } else {
-                    debug!("准备调用移除回调: 节点ID={}", node_id);
-                    removed_callback(node_id);
-                    debug!("移除回调已调用");
+            info!("启动mDNS消息处理任务，准备接收服务发现事件");
+            
+            // 故意等待一下，确保通道已经准备好接收消息
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            info!("mDNS消息处理任务开始接收消息");
+            
+            loop {
+                info!("等待接收mDNS消息...");
+                match rx.recv().await {
+                    Some((is_discovered, node_id, addr, port)) => {
+                        info!("!!!收到mDNS消息: 节点ID={}, 地址={}, 端口={}", node_id, addr, port);
+                        
+                        if is_discovered {
+                            info!("!!!准备调用发现回调: 节点ID={}, 地址={}, 端口={}", node_id, addr, port);
+                            
+                            // 捕获并记录回调执行过程中的任何panic
+                            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                info!("!!!开始执行发现回调");
+                                discovered_callback(node_id.clone(), addr.clone(), port);
+                                info!("!!!发现回调执行完毕");
+                            }));
+                            
+                            if result.is_ok() {
+                                info!("!!!发现回调已成功调用");
+                            } else {
+                                error!("!!!发现回调执行过程中发生panic: 节点ID={}, 地址={}", node_id, addr);
+                            }
+                        } else {
+                            info!("!!!准备调用移除回调: 节点ID={}", node_id);
+                            
+                            // 捕获并记录回调执行过程中的任何panic
+                            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                info!("!!!开始执行移除回调");
+                                removed_callback(node_id.clone());
+                                info!("!!!移除回调执行完毕");
+                            }));
+                            
+                            if result.is_ok() {
+                                info!("!!!移除回调已成功调用");
+                            } else {
+                                error!("!!!移除回调执行过程中发生panic: 节点ID={}", node_id);
+                            }
+                        }
+                    },
+                    None => {
+                        info!("mDNS消息处理任务结束 - 通道已关闭");
+                        break;
+                    }
                 }
             }
         });

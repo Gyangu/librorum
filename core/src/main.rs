@@ -24,6 +24,10 @@ struct Cli {
     /// 日志级别 (trace, debug, info, warn, error)
     #[clap(short, long, default_value = "info")]
     log_level: String,
+    
+    /// 启用调试日志（相当于 --log-level=debug）
+    #[clap(short, long)]
+    verbose: bool,
 }
 
 /// 命令集
@@ -34,6 +38,10 @@ enum Command {
         /// 配置文件路径
         #[clap(short, long, value_name = "FILE")]
         config: Option<PathBuf>,
+
+        /// 启用调试日志
+        #[clap(short, long)]
+        verbose: bool,
     },
 
     /// 停止服务
@@ -79,6 +87,10 @@ enum Command {
         /// 配置文件路径
         #[clap(short, long, value_name = "FILE")]
         config: Option<PathBuf>,
+        
+        /// 启用调试日志
+        #[clap(short, long)]
+        verbose: bool,
     },
 }
 
@@ -95,11 +107,25 @@ async fn main() -> Result<()> {
     }
 
     // 解析命令行参数
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    
+    // 如果指定了verbose参数，设置日志级别为debug
+    if cli.verbose {
+        cli.log_level = "debug".to_string();
+    }
 
     // 根据命令执行不同操作
     match &cli.command {
-        Command::Start { config: cmd_config } => {
+        Command::Start { config: cmd_config, verbose } => {
+            // 如果命令行开启了调试模式，设置环境变量
+            if *verbose {
+                println!("启用调试日志级别");
+                // 使用unsafe块设置环境变量
+                unsafe {
+                    std::env::set_var("LIBRORUM_VERBOSE", "1");
+                }
+            }
+            
             // 如果命令行参数中指定了配置文件，优先使用
             if let Some(config_path) = cmd_config {
                 println!("使用指定的配置文件: {:?}", config_path);
@@ -168,9 +194,16 @@ async fn main() -> Result<()> {
             }
         }
 
-        Command::Run { daemon, config } => {
+        Command::Run { daemon, config, verbose } => {
             // 配置日志
-            if let Err(e) = logger::init_logger(&cli.log_level, *daemon) {
+            // 如果指定了verbose参数，设置日志级别为debug
+            let log_level = if *verbose {
+                "debug".to_string()
+            } else {
+                cli.log_level.clone()
+            };
+            
+            if let Err(e) = logger::init_logger(&log_level, *daemon) {
                 eprintln!("无法初始化日志系统: {}", e);
                 return Err(e);
             }

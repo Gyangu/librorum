@@ -116,6 +116,16 @@ fn service_main(_arguments: Vec<OsString>) {
 /// 启动守护进程 (Unix)
 #[cfg(all(unix, feature = "daemon-unix"))]
 pub fn start_daemon(config: &NodeConfig) -> Result<()> {
+    // 检查verbose环境变量
+    let verbose = std::env::var("LIBRORUM_VERBOSE").is_ok();
+    
+    // 设置是否启用verbose模式
+    if verbose {
+        unsafe {
+            std::env::set_var("LIBRORUM_VERBOSE", "1");
+        }
+    }
+    
     // 确保 PID 目录存在
     fs::create_dir_all(pid_dir_path())?;
 
@@ -147,8 +157,15 @@ pub fn start_daemon(config: &NodeConfig) -> Result<()> {
         Ok(_) => {
             // 这部分代码在守护进程中执行
             let config_str = config_file.to_string_lossy();
+            
+            // 检查是否在环境变量中设置了verbose模式
+            let mut args = vec!["run", "--daemon", "--config", &config_str];
+            if std::env::var("LIBRORUM_VERBOSE").is_ok() {
+                args.push("--verbose");
+            }
+            
             let status = Command::new(&executable)
-                .args(["run", "--daemon", "--config", &config_str])
+                .args(args)
                 .status()
                 .with_context(|| "无法启动服务进程")?;
 
@@ -195,8 +212,15 @@ pub fn start_daemon(config: &NodeConfig) -> Result<()> {
     #[cfg(unix)]
     {
         let config_str = config_file.to_string_lossy();
+        
+        // 检查是否在环境变量中设置了verbose模式
+        let mut args = vec!["run", "--daemon", "--config", &config_str];
+        if std::env::var("LIBRORUM_VERBOSE").is_ok() {
+            args.push("--verbose");
+        }
+        
         let child = Command::new(&executable)
-            .args(["run", "--daemon", "--config", &config_str])
+            .args(args)
             .spawn()
             .with_context(|| "无法启动服务进程")?;
 
@@ -213,12 +237,18 @@ pub fn start_daemon(config: &NodeConfig) -> Result<()> {
     {
         let config_str = config_file.to_string_lossy();
 
+        // 检查是否在环境变量中设置了verbose模式
+        let mut args = vec!["run", "--daemon", "--config", &config_str];
+        if std::env::var("LIBRORUM_VERBOSE").is_ok() {
+            args.push("--verbose");
+        }
+        
         // 在Windows上使用CreateProcess API启动进程
         use std::os::windows::process::CommandExt;
         const DETACHED_PROCESS: u32 = 0x00000008;
 
         let child = Command::new(&executable)
-            .args(["run", "--daemon", "--config", &config_str])
+            .args(args)
             .creation_flags(DETACHED_PROCESS)
             .spawn()
             .with_context(|| "无法启动服务进程")?;

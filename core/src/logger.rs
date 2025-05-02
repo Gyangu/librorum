@@ -14,7 +14,7 @@ use tracing_appender::{
 };
 use tracing_log::LogTracer;
 use tracing_subscriber::{
-    fmt::{self, format::FmtSpan, time::UtcTime},
+    fmt::{self, format::FmtSpan, time},
     layer::SubscriberExt,
     EnvFilter,
 };
@@ -118,7 +118,7 @@ pub fn init_logger(log_level: &str, to_file: bool) -> Result<()> {
             .with_writer(io::stdout)
             .with_ansi(true)
             .with_span_events(FmtSpan::CLOSE)
-            .with_timer(UtcTime::rfc_3339())
+            .with_timer(time::SystemTime::default())
             .with_file(true)
             .with_line_number(true)
             .with_target(false); // 不显示目标模块路径
@@ -136,7 +136,7 @@ pub fn init_logger(log_level: &str, to_file: bool) -> Result<()> {
                 .with_writer(non_blocking_appender)
                 .with_ansi(false)
                 .with_span_events(FmtSpan::CLOSE)
-                .with_timer(UtcTime::rfc_3339())
+                .with_timer(time::SystemTime::default())
                 .with_file(true)
                 .with_line_number(true)
                 .with_target(false); // 不显示目标模块路径

@@ -73,6 +73,7 @@ impl NodeClient {
 
     /// 尝试单次发送心跳包
     async fn try_send_heartbeat(&self, remote_addr: &str) -> Result<HeartbeatResponse> {
+        debug!("尝试发送心跳包到节点: {}", remote_addr);
         // 连接到远程节点
         let mut client = self.connect_with_timeout(remote_addr).await?;
 
