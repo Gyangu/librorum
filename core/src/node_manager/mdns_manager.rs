@@ -3,8 +3,10 @@ use if_addrs::get_if_addrs;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::task;
 use tracing::{info, warn, error, debug};
 
@@ -125,8 +127,8 @@ impl MdnsManager {
     /// 启动服务发现
     pub async fn start_discovery(
         &self,
-        discovered_callback: impl Fn(String, String, u16) + Send + 'static,
-        removed_callback: impl Fn(String) + Send + 'static,
+        discovered_callback: impl Fn(String, String, u16) + Send + Sync + 'static,
+        removed_callback: impl Fn(String) + Send + Sync + 'static,
     ) -> Result<()> {
         // 检查是否已经在运行
         {
@@ -148,13 +150,23 @@ impl MdnsManager {
 
         info!("开始服务发现: {}", SERVICE_TYPE);
 
-        // 创建通道用于从tokio任务中接收结果
-        let (tx, mut rx) = mpsc::channel::<(bool, String, String, u16)>(100);
+        // 打印当前网络接口信息，帮助调试
+        if let Ok(interfaces) = get_if_addrs() {
+            info!("当前网络接口信息:");
+            for interface in interfaces {
+                info!("  接口: {}, 地址: {:?}", interface.name, interface.addr);
+            }
+        }
 
-        // 启动后台任务监听mDNS事件
+        // 不使用通道，直接在处理事件时调用回调函数
         let discovery_running = self.discovery_running.clone();
         let own_node_id = self.node_id.clone();
+        let discovered_cb = Arc::new(discovered_callback);
+        let removed_cb = Arc::new(removed_callback);
+        
         task::spawn(async move {
+            info!("启动mDNS事件监听任务");
+            
             while *discovery_running.lock().unwrap() {
                 match receiver.recv_timeout(Duration::from_secs(1)) {
                     Ok(event) => {
@@ -184,21 +196,31 @@ impl MdnsManager {
                                     let ip_str = addr.to_string();
                                     let service_addr = format!("{}:{}", ip_str, port);
 
+                                    // 打印所有可用地址，便于调试
+                                    let all_addresses: Vec<String> = info.get_addresses().iter()
+                                        .map(|a| a.to_string())
+                                        .collect();
                                     info!(
-                                        "发现节点: {} ({} - {})",
+                                        "发现节点: {} ({} - {}) 全部地址: {:?}",
                                         node_id,
                                         service_addr,
-                                        hostname
+                                        hostname,
+                                        all_addresses
                                     );
 
-                                    // 发送发现事件到回调
-                                    match tx.send((true, node_id.clone(), service_addr.clone(), port)).await {
-                                        Ok(_) => {
-                                            info!("发送发现事件到回调成功: 节点ID={}, 地址={}, 端口={}", node_id, service_addr, port);
-                                        },
-                                        Err(e) => {
-                                            error!("发送发现事件到回调失败: 节点ID={}, 地址={}, 端口={}, 错误: {:?}", node_id, service_addr, port, e);
-                                        }
+                                    // 直接调用回调函数
+                                    info!("直接调用发现回调: 节点ID={}, 地址={}, 端口={}", node_id, service_addr, port);
+                                    let discovery_cb_clone = discovered_cb.clone();
+                                    let node_id_clone = node_id.clone();
+                                    let addr_clone = service_addr.clone();
+                                    
+                                    // 捕获并记录回调执行过程中的任何panic
+                                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        discovery_cb_clone(node_id_clone, addr_clone, port);
+                                    }));
+                                    
+                                    if result.is_err() {
+                                        error!("发现回调执行过程中发生panic: 节点ID={}, 地址={}", node_id, service_addr);
                                     }
                                 } else {
                                     debug!("节点 {} 无可用的IPv4地址，忽略", node_id);
@@ -207,8 +229,20 @@ impl MdnsManager {
                             ServiceEvent::ServiceRemoved(_, fullname) => {
                                 let node_id = fullname.to_string();
                                 info!("节点离线: {}", node_id);
-                                // 发送移除事件到回调
-                                let _ = tx.send((false, node_id, String::new(), 0)).await;
+                                
+                                // 直接调用移除回调
+                                info!("直接调用移除回调: 节点ID={}", node_id);
+                                let remove_cb_clone = removed_cb.clone();
+                                let node_id_clone = node_id.clone();
+                                
+                                // 捕获并记录回调执行过程中的任何panic
+                                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    remove_cb_clone(node_id_clone);
+                                }));
+                                
+                                if result.is_err() {
+                                    error!("移除回调执行过程中发生panic: 节点ID={}", node_id);
+                                }
                             }
                             _ => {}
                         }
@@ -220,65 +254,14 @@ impl MdnsManager {
                 }
             }
 
-            info!("mDNS服务发现已停止");
+            info!("mDNS事件监听任务结束");
+            
             // 关闭mDNS守护进程
             if let Err(e) = mdns.shutdown() {
                 error!("关闭mDNS服务发现失败: {}", e);
             }
-        });
-
-        // 处理通道消息
-        task::spawn(async move {
-            info!("启动mDNS消息处理任务，准备接收服务发现事件");
             
-            // 故意等待一下，确保通道已经准备好接收消息
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            info!("mDNS消息处理任务开始接收消息");
-            
-            loop {
-                info!("等待接收mDNS消息...");
-                match rx.recv().await {
-                    Some((is_discovered, node_id, addr, port)) => {
-                        info!("!!!收到mDNS消息: 节点ID={}, 地址={}, 端口={}", node_id, addr, port);
-                        
-                        if is_discovered {
-                            info!("!!!准备调用发现回调: 节点ID={}, 地址={}, 端口={}", node_id, addr, port);
-                            
-                            // 捕获并记录回调执行过程中的任何panic
-                            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                info!("!!!开始执行发现回调");
-                                discovered_callback(node_id.clone(), addr.clone(), port);
-                                info!("!!!发现回调执行完毕");
-                            }));
-                            
-                            if result.is_ok() {
-                                info!("!!!发现回调已成功调用");
-                            } else {
-                                error!("!!!发现回调执行过程中发生panic: 节点ID={}, 地址={}", node_id, addr);
-                            }
-                        } else {
-                            info!("!!!准备调用移除回调: 节点ID={}", node_id);
-                            
-                            // 捕获并记录回调执行过程中的任何panic
-                            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                info!("!!!开始执行移除回调");
-                                removed_callback(node_id.clone());
-                                info!("!!!移除回调执行完毕");
-                            }));
-                            
-                            if result.is_ok() {
-                                info!("!!!移除回调已成功调用");
-                            } else {
-                                error!("!!!移除回调执行过程中发生panic: 节点ID={}", node_id);
-                            }
-                        }
-                    },
-                    None => {
-                        info!("mDNS消息处理任务结束 - 通道已关闭");
-                        break;
-                    }
-                }
-            }
+            info!("mDNS服务发现已完全停止");
         });
 
         Ok(())

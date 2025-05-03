@@ -74,6 +74,9 @@ enum Command {
         days: u64,
     },
 
+    /// 清理全部日志
+    CleanAllLogs,
+
     /// 显示节点健康状态
     NodesStatus,
 
@@ -172,6 +175,11 @@ async fn main() -> Result<()> {
         Command::CleanLogs { days } => {
             let count = logger::clean_old_logs(*days)?;
             println!("已清理 {} 个旧日志文件", count);
+        }
+
+        Command::CleanAllLogs => {
+            let count = logger::clean_all_logs()?;
+            println!("已清理 {} 个日志文件", count);
         }
 
         Command::NodesStatus => {

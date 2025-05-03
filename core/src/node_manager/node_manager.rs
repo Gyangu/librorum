@@ -160,20 +160,6 @@ impl NodeManager {
         // 启动健康监控
         self.start_health_monitor().await;
 
-        // 测试节点: 添加一个测试节点来验证重试逻辑
-        // 注意：实际产品中应该删除这段代码
-        let test_node_addr = "192.168.31.92:50051".to_string();
-        info!("添加测试节点: {}", test_node_addr);
-        {
-            let mut nodes = self.discovered_nodes.lock().unwrap();
-            nodes.push(test_node_addr.clone());
-        }
-        self.health_monitor.add_node(
-            "test-node".to_string(), 
-            test_node_addr, 
-            "test-system".to_string()
-        );
-
         // 启动mDNS服务发现
         let discovered_nodes = self.discovered_nodes.clone();
         let health_monitor = self.health_monitor.clone();

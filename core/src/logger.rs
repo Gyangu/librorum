@@ -298,3 +298,32 @@ pub fn view_recent_logs(tail: usize) -> Result<String> {
         Ok("No log files found".to_string())
     }
 }
+
+/// Clean all log files
+pub fn clean_all_logs() -> Result<usize> {
+    let log_dir = log_dir_path();
+    
+    if !log_dir.exists() {
+        return Ok(0);
+    }
+    
+    let mut removed = 0;
+    
+    for entry in fs::read_dir(log_dir)? {
+        let entry = entry?;
+        let metadata = entry.metadata()?;
+        
+        if !metadata.is_file() {
+            continue;
+        }
+        
+        let file_name = entry.file_name();
+        let file_name_str = file_name.to_string_lossy();
+        if file_name_str.starts_with("librorum.") || file_name_str.contains("librorum-") {
+            fs::remove_file(entry.path())?;
+            removed += 1;
+        }
+    }
+    
+    Ok(removed)
+}
