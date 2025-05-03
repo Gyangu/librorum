@@ -49,8 +49,8 @@ Options:
   - macOS 原生应用
   - 适配 Mac 和 iOS
   - 通过 Tonic 与后端通信
-  - 使用 swift UI
-  - 使用 Observation 框架与 @Observable 宏 以及 SwiftData 管理数据
+  - 必须使用 Swift UI
+  - 必须使用 Observation 框架与 @Observable 宏 以及 SwiftData 管理数据
 
 
 # 编码规范
