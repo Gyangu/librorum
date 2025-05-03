@@ -5,14 +5,14 @@
 //  Created by 戈洋 on 2025/5/3.
 //
 
-import SwiftUI
 import SwiftData
+import SwiftUI
 
 @main
 struct librorumApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            Item.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 

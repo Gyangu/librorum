@@ -195,6 +195,9 @@
 			);
 			mainGroup = 058ECB7B2DC66D230058BB54;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				05563D782DC6CAA100415C6D /* XCRemoteSwiftPackageReference "Inject" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 058ECB852DC66D230058BB54 /* Products */;
 			projectDirPath = "";
@@ -411,6 +414,11 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = "";
+				"OTHER_LDFLAGS[arch=*]" = (
+					"-Xlinker",
+					"-interposable",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = gyangu.com.librorum;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -450,6 +458,11 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = "";
+				"OTHER_LDFLAGS[arch=*]" = (
+					"-Xlinker",
+					"-interposable",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = gyangu.com.librorum;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -561,7 +574,7 @@
 				058ECBAA2DC66D250058BB54 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
 		058ECBAB2DC66D250058BB54 /* Build configuration list for PBXNativeTarget "librorum" */ = {
 			isa = XCConfigurationList;
@@ -570,7 +583,7 @@
 				058ECBAD2DC66D250058BB54 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
 		058ECBAE2DC66D250058BB54 /* Build configuration list for PBXNativeTarget "librorumTests" */ = {
 			isa = XCConfigurationList;
@@ -579,7 +592,7 @@
 				058ECBB02DC66D250058BB54 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
 		058ECBB12DC66D250058BB54 /* Build configuration list for PBXNativeTarget "librorumUITests" */ = {
 			isa = XCConfigurationList;
@@ -588,9 +601,20 @@
 				058ECBB32DC66D250058BB54 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		05563D782DC6CAA100415C6D /* XCRemoteSwiftPackageReference "Inject" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/krzysztofzablocki/Inject.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.5.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
 	};
 	rootObject = 058ECB7C2DC66D230058BB54 /* Project object */;
 }
