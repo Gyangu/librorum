@@ -115,7 +115,7 @@ impl NodeClient {
             match timeout(timeout_duration, connect_future).await {
                 Ok(result) => match result {
                     Ok(client) => {
-                        info!("成功连接到节点: {}", addr);
+                        debug!("成功连接到节点: {}", addr);
                         return Ok(client);
                     }
                     Err(err) => {

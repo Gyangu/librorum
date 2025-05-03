@@ -4,9 +4,11 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use tracing::info;
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
+use tracing::{debug, info};
+
+use crate::node_manager::node_health::HealthMonitor;
 
 /// 节点信息结构体
 #[derive(Debug, Clone)]
@@ -48,6 +50,7 @@ pub struct NodeServiceImpl {
     pub address: String,
     pub system_info: String,
     pub nodes: Arc<Mutex<HashMap<String, NodeConnection>>>,
+    pub health_monitor: Option<Arc<HealthMonitor>>,
 }
 
 impl NodeServiceImpl {
@@ -58,7 +61,14 @@ impl NodeServiceImpl {
             address,
             system_info,
             nodes: Arc::new(Mutex::new(HashMap::new())),
+            health_monitor: None,
         }
+    }
+
+    /// 设置健康监控器
+    pub fn with_health_monitor(mut self, health_monitor: Arc<HealthMonitor>) -> Self {
+        self.health_monitor = Some(health_monitor);
+        self
     }
 
     /// 获取所有已知节点的连接状态
@@ -157,7 +167,15 @@ impl NodeService for NodeServiceImpl {
             conn.last_connection = timestamp;
             conn.success_count += 1;
 
-            info!("更新节点连接: {} ({})", req.node_id, req.address);
+            debug!("更新节点连接: {} ({})", req.node_id, req.address);
+
+            // 同时通知健康监控器该节点在线
+            if let Some(health_monitor) = &self.health_monitor {
+                if let Err(e) = health_monitor.reset_node_status(&req.address) {
+                    // 这里只记录错误，不中断处理
+                    info!("在心跳处理中重置节点状态失败: {} - {}", req.address, e);
+                }
+            }
         } else {
             // 添加新节点
             let new_conn = NodeConnection {
@@ -169,7 +187,23 @@ impl NodeService for NodeServiceImpl {
             };
 
             nodes.insert(req.address.clone(), new_conn);
-            info!("发现新节点连接: {} ({})", req.node_id, req.address);
+            debug!("发现新节点连接: {} ({})", req.node_id, req.address);
+
+            // 同时通知健康监控器该节点在线
+            if let Some(health_monitor) = &self.health_monitor {
+                // 先添加节点，确保健康监控器知道该节点
+                health_monitor.add_node(
+                    req.node_id.clone(),
+                    req.address.clone(),
+                    req.system_info.clone(),
+                );
+
+                // 然后标记为在线
+                if let Err(e) = health_monitor.reset_node_status(&req.address) {
+                    // 这里只记录错误，不中断处理
+                    info!("在心跳处理中重置新节点状态失败: {} - {}", req.address, e);
+                }
+            }
         }
 
         // 构造响应

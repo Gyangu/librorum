@@ -74,7 +74,7 @@ impl NodeHealth {
 }
 
 /// 健康监控器，负责跟踪和管理节点的健康状态
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct HealthMonitor {
     /// 节点健康状态
     node_health: Arc<Mutex<HashMap<String, NodeHealth>>>,
@@ -119,13 +119,32 @@ impl HealthMonitor {
         let mut health_map = self.node_health.lock().unwrap();
         if let Some(health) = health_map.get_mut(address) {
             health.mark_failure();
-            debug!(
-                "节点心跳失败 ({}次): {}",
-                health.failure_count, address
-            );
+            debug!("节点心跳失败 ({}次): {}", health.failure_count, address);
             Ok(())
         } else {
             warn!("尝试更新未知节点失败: {}", address);
+            Err(anyhow::anyhow!("未知节点: {}", address))
+        }
+    }
+
+    /// 重置节点健康状态，强制设为在线
+    pub fn reset_node_status(&self, address: &str) -> Result<()> {
+        let mut health_map = self.node_health.lock().unwrap();
+        if let Some(health) = health_map.get_mut(address) {
+            debug!(
+                "强制重置节点状态: {}, 原状态: {:?}, 失败计数: {}",
+                address, health.status, health.failure_count
+            );
+
+            // 重置状态
+            health.last_heartbeat = Utc::now();
+            health.failure_count = 0;
+            health.status = NodeStatus::Online;
+            health.latency_ms = None;
+
+            Ok(())
+        } else {
+            warn!("尝试重置未知节点状态: {}", address);
             Err(anyhow::anyhow!("未知节点: {}", address))
         }
     }
@@ -145,15 +164,15 @@ impl HealthMonitor {
     /// 获取健康报告
     pub fn generate_health_report(&self) -> String {
         let health_map = self.node_health.lock().unwrap();
-        
+
         if health_map.is_empty() {
             return "没有发现任何节点".to_string();
         }
-        
+
         let mut online_count = 0;
         let mut offline_count = 0;
         let mut unknown_count = 0;
-        
+
         for health in health_map.values() {
             match health.status {
                 NodeStatus::Online => online_count += 1,
@@ -161,7 +180,7 @@ impl HealthMonitor {
                 NodeStatus::Unknown => unknown_count += 1,
             }
         }
-        
+
         let mut report = format!(
             "节点状态摘要: 共 {} 个节点 (在线: {}, 离线: {}, 未知: {})\n",
             health_map.len(),
@@ -169,16 +188,16 @@ impl HealthMonitor {
             offline_count,
             unknown_count
         );
-        
+
         report.push_str("节点详情:\n");
-        
+
         for health in health_map.values() {
             let status_str = match health.status {
                 NodeStatus::Online => "在线",
                 NodeStatus::Offline => "离线",
                 NodeStatus::Unknown => "未知",
             };
-            
+
             let last_seen_secs = (Utc::now() - health.last_heartbeat).num_seconds();
             let last_seen = if last_seen_secs < 60 {
                 format!("{}秒前", last_seen_secs)
@@ -187,12 +206,12 @@ impl HealthMonitor {
             } else {
                 format!("{}小时前", last_seen_secs / 3600)
             };
-            
+
             let latency = match health.latency_ms {
                 Some(ms) => format!("{}ms", ms),
                 None => "未知".to_string(),
             };
-            
+
             report.push_str(&format!(
                 "  - {}: {} | {} | 延迟: {} | 最后心跳: {} | 失败计数: {}\n",
                 health.address,
@@ -203,7 +222,7 @@ impl HealthMonitor {
                 health.failure_count
             ));
         }
-        
+
         report
     }
 
@@ -222,4 +241,4 @@ impl HealthMonitor {
             }
         }
     }
-} 
+}

@@ -3,10 +3,7 @@ use if_addrs::get_if_addrs;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
 use tokio::task;
 use tracing::{info, warn, error, debug};
 
@@ -200,7 +197,7 @@ impl MdnsManager {
                                     let all_addresses: Vec<String> = info.get_addresses().iter()
                                         .map(|a| a.to_string())
                                         .collect();
-                                    info!(
+                                    debug!(
                                         "发现节点: {} ({} - {}) 全部地址: {:?}",
                                         node_id,
                                         service_addr,
@@ -208,8 +205,6 @@ impl MdnsManager {
                                         all_addresses
                                     );
 
-                                    // 直接调用回调函数
-                                    info!("直接调用发现回调: 节点ID={}, 地址={}, 端口={}", node_id, service_addr, port);
                                     let discovery_cb_clone = discovered_cb.clone();
                                     let node_id_clone = node_id.clone();
                                     let addr_clone = service_addr.clone();

@@ -136,7 +136,9 @@ impl NodeManager {
             self.node_id.clone(),
             self.bind_address.clone(),
             self.system_info.clone(),
-        );
+        )
+        // 传递健康监控器引用
+        .with_health_monitor(Arc::new(self.health_monitor.clone()));
 
         // 获取端口
         let port = self
@@ -166,11 +168,11 @@ impl NodeManager {
 
         // 定义服务发现回调
         let discovery_callback = move |node_id: String, address: String, _port: u16| {
-            info!("节点发现回调: 节点ID={}, 地址={}", node_id, address);
+            debug!("节点发现回调: 节点ID={}, 地址={}", node_id, address);
 
             // 跳过IPv6地址
             if address.matches(':').count() > 1 {
-                info!("忽略IPv6地址节点: {} ({})", node_id, address);
+                debug!("忽略IPv6地址节点: {} ({})", node_id, address);
                 return;
             }
 
@@ -191,6 +193,24 @@ impl NodeManager {
                 
                 // 初始化节点健康状态
                 health_monitor.add_node(node_id.clone(), address.clone(), String::new());
+            } else {
+                // 节点已存在，但可能状态不正确，重置健康状态
+                debug!("节点已存在，尝试重置健康状态: {} ({})", node_id, address);
+                
+                // 获取当前节点健康状态
+                let health_opt = health_monitor.get_node_health(&address);
+                
+                if let Some(health) = health_opt {
+                    if health.status != NodeStatus::Online {
+                        info!("重置离线节点状态: {} ({}), 当前失败计数: {}", 
+                             node_id, address, health.failure_count);
+                        
+                        // 手动将节点标记为在线，强制重置离线状态
+                        if let Err(e) = health_monitor.reset_node_status(&address) {
+                            warn!("重置节点状态失败: {}", e);
+                        }
+                    }
+                }
             }
         };
 
