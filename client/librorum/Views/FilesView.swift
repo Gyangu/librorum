@@ -2,12 +2,11 @@ import SwiftUI
 import SwiftData
 import Foundation
 
-// 引入格式化工具
-
 // 文件网格项视图组件
 struct FileGridItemView: View {
     let file: FileItem
     let onTap: () -> Void
+    var isPhone: Bool
     
     // 文件类型颜色映射
     private func colorForFileType(_ fileExt: String) -> Color {
@@ -54,7 +53,7 @@ struct FileGridItemView: View {
                             )
                     }
                 }
-                .frame(width: 160, height: 120)
+                .frame(width: isPhone ? 140 : 160, height: isPhone ? 100 : 120)
                 .cornerRadius(4)
                 
                 // 文件类型标签
@@ -75,7 +74,7 @@ struct FileGridItemView: View {
                 .font(.caption)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(width: 150)
+                .frame(width: isPhone ? 130 : 150)
         }
         .padding(.vertical, 8)
         .contentShape(Rectangle())
@@ -180,13 +179,18 @@ struct FilesView: View {
     @State private var viewMode: ViewMode = .grid
     @State private var currentPath = "文件"
     @State private var showFilterOptions = false
-
-    // 间距规范，与MainView保持一致
-    private enum Spacing {
-        static let normal: CGFloat = 16
-        static let small: CGFloat = 8
-        static let large: CGFloat = 24
+    
+    // 使用DeviceUtilities判断设备类型
+    var isPhone: Bool {
+        DeviceUtilities.isPhone
     }
+    
+    // 使用DeviceUtilities生成震动反馈
+    private func generateHapticFeedback() {
+        DeviceUtilities.generateHapticFeedback()
+    }
+
+    // 不再需要局部Spacing枚举，改用AppSpacing
 
     enum ViewMode {
         case list, grid
@@ -202,87 +206,103 @@ struct FilesView: View {
     }
 
     // 每行显示的网格数量
-    private let gridColumns = [
-        GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 0)
-    ]
+    private var gridColumns: [GridItem] {
+        if isPhone {
+            return [GridItem(.adaptive(minimum: 140, maximum: 160), spacing: 0)]
+        } else {
+            return [GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 0)]
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            // 顶部工具栏 - 优化设计
-            VStack(spacing: 0) {
-                // 主工具栏
-                HStack(spacing: Spacing.small) {
-                    // 导航按钮组
-                    HStack(spacing: 2) {
+            // 功能工具栏
+            HStack {
+                // 左侧文件操作按钮
+                if isPhone {
+                    // iPhone简化版工具栏
+                    HStack(spacing: 4) {
                         Button(action: {
-                            // 后退
+                            // 上传文件
+                            generateHapticFeedback()
                         }) {
-                            Image(systemName: "chevron.left")
-                                .frame(width: 28, height: 28)
+                            Image(systemName: "arrow.up.doc")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         
                         Button(action: {
-                            // 前进
+                            // 新建文件夹
+                            generateHapticFeedback()
                         }) {
-                            Image(systemName: "chevron.right")
-                                .frame(width: 28, height: 28)
+                            Image(systemName: "folder.badge.plus")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                    }
-                    .padding(4)
-                    .background(Color.secondary.opacity(0.1))
-                    .cornerRadius(6)
-                    
-                    // 路径导航
-                    HStack {
-                        Image(systemName: "folder.fill")
-                            .foregroundColor(.accentColor)
-                            .font(.footnote)
-                        Text(currentPath)
-                            .lineLimit(1)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.secondary.opacity(0.1))
-                    .cornerRadius(6)
-                    
-                    Spacer()
-                    
-                    // 搜索栏
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundColor(.secondary)
-                            .padding(.leading, 8)
                         
-                        TextField("搜索", text: $searchText)
-                            .textFieldStyle(.plain)
-                            .frame(width: 180)
-                        
-                        if !searchText.isEmpty {
-                            Button(action: {
-                                searchText = ""
-                            }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.secondary)
+                        // 排序菜单
+                        Menu {
+                            ForEach(SortOrder.allCases, id: \.self) { order in
+                                Button(order.rawValue) {
+                                    sortOrder = order
+                                    sortFiles()
+                                    generateHapticFeedback()
+                                }
                             }
-                            .padding(.trailing, 8)
+                        } label: {
+                            Image(systemName: "arrow.up.arrow.down")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                     }
-                    .frame(height: 28)
-                    .background(Color.secondary.opacity(0.1))
-                    .cornerRadius(6)
-                }
-                .padding(.horizontal, Spacing.small)
-                .padding(.vertical, 8)
-                
-                // 功能工具栏
-                HStack {
-                    // 左侧文件操作按钮
+                } else {
+                    // Mac完整版工具栏
                     HStack(spacing: 2) {
+                        // 导航按钮组
+                        HStack(spacing: 2) {
+                            Button(action: {
+                                // 后退
+                                generateHapticFeedback()
+                            }) {
+                                Image(systemName: "chevron.left")
+                                    .frame(width: 28, height: 28)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            
+                            Button(action: {
+                                // 前进
+                                generateHapticFeedback()
+                            }) {
+                                Image(systemName: "chevron.right")
+                                    .frame(width: 28, height: 28)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(4)
+                        .background(Color.secondary.opacity(0.1))
+                        .cornerRadius(6)
+                        
+                        // 路径导航
+                        HStack {
+                            Image(systemName: "folder.fill")
+                                .foregroundColor(.accentColor)
+                                .font(.footnote)
+                            Text(currentPath)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.secondary.opacity(0.1))
+                        .cornerRadius(6)
+                        
                         // 上传按钮
                         Button(action: {
                             // 上传文件
+                            generateHapticFeedback()
                         }) {
                             HStack(spacing: 4) {
                                 Image(systemName: "arrow.up.doc")
@@ -296,6 +316,7 @@ struct FilesView: View {
                         // 新建文件夹按钮
                         Button(action: {
                             // 新建文件夹
+                            generateHapticFeedback()
                         }) {
                             HStack(spacing: 4) {
                                 Image(systemName: "folder.badge.plus")
@@ -312,6 +333,7 @@ struct FilesView: View {
                                 Button(order.rawValue) {
                                     sortOrder = order
                                     sortFiles()
+                                    generateHapticFeedback()
                                 }
                             }
                         } label: {
@@ -323,40 +345,69 @@ struct FilesView: View {
                             .padding(.vertical, 4)
                         }
                     }
-                    
-                    Spacer()
-                    
-                    // 右侧视图切换按钮
-                    HStack(spacing: 2) {
-                        Button(action: {
-                            viewMode = .grid
-                        }) {
-                            Image(systemName: "square.grid.2x2")
-                                .padding(6)
-                                .background(viewMode == .grid ? Color.accentColor.opacity(0.2) : Color.clear)
-                                .foregroundColor(viewMode == .grid ? .accentColor : .primary)
-                                .cornerRadius(4)
-                        }
-                        .buttonStyle(.plain)
-                        
-                        Button(action: {
-                            viewMode = .list
-                        }) {
-                            Image(systemName: "list.bullet")
-                                .padding(6)
-                                .background(viewMode == .list ? Color.accentColor.opacity(0.2) : Color.clear)
-                                .foregroundColor(viewMode == .list ? .accentColor : .primary)
-                                .cornerRadius(4)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(2)
-                    .background(Color.secondary.opacity(0.1))
-                    .cornerRadius(6)
                 }
-                .padding(.horizontal, Spacing.small)
-                .padding(.bottom, 8)
+                
+                Spacer()
+                
+                // 搜索栏
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                        .padding(.leading, 8)
+                    
+                    TextField("搜索", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .frame(width: isPhone ? 120 : 180)
+                    
+                    if !searchText.isEmpty {
+                        Button(action: {
+                            searchText = ""
+                            generateHapticFeedback()
+                        }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.trailing, 8)
+                    }
+                }
+                .frame(height: 28)
+                .background(Color.secondary.opacity(0.1))
+                .cornerRadius(6)
+                
+                // 右侧视图切换按钮
+                HStack(spacing: 2) {
+                    Button(action: {
+                        viewMode = .grid
+                        generateHapticFeedback()
+                    }) {
+                        Image(systemName: "square.grid.2x2")
+                            .padding(6)
+                            .background(viewMode == .grid ? Color.accentColor.opacity(0.2) : Color.clear)
+                            .foregroundColor(viewMode == .grid ? .accentColor : .primary)
+                            .cornerRadius(4)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    
+                    Button(action: {
+                        viewMode = .list
+                        generateHapticFeedback()
+                    }) {
+                        Image(systemName: "list.bullet")
+                            .padding(6)
+                            .background(viewMode == .list ? Color.accentColor.opacity(0.2) : Color.clear)
+                            .foregroundColor(viewMode == .list ? .accentColor : .primary)
+                            .cornerRadius(4)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(2)
+                .background(Color.secondary.opacity(0.1))
+                .cornerRadius(6)
             }
+            .padding(.horizontal, AppSpacing.small)
+            .padding(.vertical, 8)
             
             Divider()
             
@@ -379,12 +430,12 @@ struct FilesView: View {
         ScrollView {
             LazyVGrid(columns: gridColumns, spacing: 0) {
                 ForEach(filteredFiles, id: \.id) { file in
-                    FileGridItemView(file: file) {
+                    FileGridItemView(file: file, onTap: {
                         handleFileTap(file)
-                    }
+                    }, isPhone: isPhone)
                 }
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, isPhone ? 4 : 8)
             .padding(.vertical, 8)
         }
     }

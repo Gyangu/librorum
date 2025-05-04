@@ -196,7 +196,6 @@
 			mainGroup = 058ECB7B2DC66D230058BB54;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				05563D782DC6CAA100415C6D /* XCRemoteSwiftPackageReference "Inject" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 058ECB852DC66D230058BB54 /* Products */;
@@ -604,17 +603,6 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		05563D782DC6CAA100415C6D /* XCRemoteSwiftPackageReference "Inject" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/krzysztofzablocki/Inject.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.5.2;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
 	};
 	rootObject = 058ECB7C2DC66D230058BB54 /* Project object */;
 }

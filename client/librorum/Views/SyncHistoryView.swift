@@ -8,11 +8,14 @@ struct SyncHistoryView: View {
     @State private var currentPath = "节点列表"
     @State private var showFilterOptions = false
     
-    // 间距规范，与MainView保持一致
-    private enum Spacing {
-        static let normal: CGFloat = 16
-        static let small: CGFloat = 8
-        static let large: CGFloat = 24
+    // 使用DeviceUtilities判断设备类型
+    var isPhone: Bool {
+        DeviceUtilities.isPhone
+    }
+    
+    // 使用DeviceUtilities生成震动反馈
+    private func generateHapticFeedback() {
+        DeviceUtilities.generateHapticFeedback()
     }
     
     enum ViewMode {
@@ -27,70 +30,71 @@ struct SyncHistoryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // 顶部工具栏 - 优化设计
-            VStack(spacing: 0) {
-                // 主工具栏
-                HStack(spacing: Spacing.small) {
-                    // 路径导航
-                    HStack {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .foregroundColor(.accentColor)
-                            .font(.footnote)
-                        Text(currentPath)
-                            .lineLimit(1)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.secondary.opacity(0.1))
-                    .cornerRadius(6)
-                    
-                    // 节点状态
-                    HStack {
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 8, height: 8)
-                        Text("3/4 在线")
-                            .foregroundColor(.secondary)
-                            .font(.caption)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.secondary.opacity(0.05))
-                    .cornerRadius(6)
-                    
-                    Spacer()
-                    
-                    // 搜索栏
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundColor(.secondary)
-                            .padding(.leading, 8)
-                        
-                        TextField("搜索节点", text: $searchText)
-                            .textFieldStyle(.plain)
-                            .frame(width: 180)
-                        
-                        if !searchText.isEmpty {
-                            Button(action: {
-                                searchText = ""
-                            }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.secondary)
+            // 顶部工具栏 - 功能区
+            HStack {
+                // 左侧筛选按钮
+                if isPhone {
+                    // iPhone简化版工具栏
+                    HStack(spacing: 8) {
+                        Menu {
+                            Button("所有节点") { 
+                                currentFilter = .all
+                                generateHapticFeedback()
                             }
-                            .padding(.trailing, 8)
+                            Button("在线节点") { 
+                                currentFilter = .online
+                                generateHapticFeedback()
+                            }
+                            Button("离线节点") { 
+                                currentFilter = .offline
+                                generateHapticFeedback()
+                            }
+                        } label: {
+                            Image(systemName: "line.3.horizontal.decrease.circle")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
+                        
+                        Button(action: {
+                            // 刷新同步历史
+                            loadSyncHistories()
+                            generateHapticFeedback()
+                        }) {
+                            Image(systemName: "arrow.clockwise")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Button(action: {
+                            // 清除所有同步历史
+                            histories.removeAll()
+                            generateHapticFeedback()
+                        }) {
+                            Image(systemName: "trash")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.red)
                     }
-                    .frame(height: 28)
-                    .background(Color.secondary.opacity(0.1))
-                    .cornerRadius(6)
-                }
-                .padding(.horizontal, Spacing.small)
-                .padding(.vertical, 8)
-                
-                // 功能工具栏
-                HStack {
-                    // 左侧筛选按钮
-                    HStack(spacing: 2) {
+                } else {
+                    // Mac完整版工具栏
+                    HStack(spacing: 8) {
+                        // 节点状态
+                        HStack {
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 8, height: 8)
+                            Text("3/4 在线")
+                                .foregroundColor(.secondary)
+                                .font(.caption)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.secondary.opacity(0.05))
+                        .cornerRadius(6)
+                        
                         Picker("筛选", selection: $currentFilter) {
                             Text("所有节点").tag(NodeFilter.all)
                             Text("在线节点").tag(NodeFilter.online)
@@ -103,6 +107,7 @@ struct SyncHistoryView: View {
                         Button(action: {
                             // 刷新同步历史
                             loadSyncHistories()
+                            generateHapticFeedback()
                         }) {
                             HStack(spacing: 4) {
                                 Image(systemName: "arrow.clockwise")
@@ -110,6 +115,7 @@ struct SyncHistoryView: View {
                             }
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         
@@ -117,6 +123,7 @@ struct SyncHistoryView: View {
                         Button(action: {
                             // 清除所有同步历史
                             histories.removeAll()
+                            generateHapticFeedback()
                         }) {
                             HStack(spacing: 4) {
                                 Image(systemName: "trash")
@@ -124,29 +131,94 @@ struct SyncHistoryView: View {
                             }
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .foregroundColor(.red)
                     }
-                    
-                    Spacer()
                 }
-                .padding(.horizontal, Spacing.small)
-                .padding(.bottom, 8)
+                
+                Spacer()
+                
+                // 搜索栏
+                if !isPhone {
+                    HStack {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundColor(.secondary)
+                            .padding(.leading, 8)
+                        
+                        TextField("搜索节点", text: $searchText)
+                            .textFieldStyle(.plain)
+                            .frame(width: 180)
+                        
+                        if !searchText.isEmpty {
+                            Button(action: {
+                                searchText = ""
+                                generateHapticFeedback()
+                            }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.trailing, 8)
+                        }
+                    }
+                    .frame(height: 28)
+                    .background(Color.secondary.opacity(0.1))
+                    .cornerRadius(6)
+                }
             }
+            .padding(.horizontal, AppSpacing.small)
+            .padding(.vertical, 8)
             
             Divider()
 
             // 同步历史列表
             List {
+                // iPhone搜索栏放在列表里
+                if isPhone {
+                    HStack {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundColor(.secondary)
+                        
+                        TextField("搜索节点", text: $searchText)
+                            .textFieldStyle(.plain)
+                        
+                        if !searchText.isEmpty {
+                            Button(action: {
+                                searchText = ""
+                                generateHapticFeedback()
+                            }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .padding(8)
+                    .background(Color.secondary.opacity(0.1))
+                    .cornerRadius(8)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .listRowBackground(Color.clear)
+                }
+                
                 // 节点状态概览
                 Section {
-                    HStack(spacing: Spacing.large) {
-                        nodeStatusCard(title: "在线节点", count: 3, total: 4, icon: "checkmark.circle.fill", color: .green)
-                        nodeStatusCard(title: "待同步文件", count: 15, total: nil, icon: "arrow.triangle.2.circlepath", color: .orange)
-                        nodeStatusCard(title: "存储空间", count: 85, total: 100, icon: "externaldrive.fill", color: .blue, unit: "%")
+                    if isPhone {
+                        // iPhone垂直布局
+                        VStack(spacing: AppSpacing.small) {
+                            nodeStatusCard(title: "在线节点", count: 3, total: 4, icon: "checkmark.circle.fill", color: .green)
+                            nodeStatusCard(title: "待同步文件", count: 15, total: nil, icon: "arrow.triangle.2.circlepath", color: .orange)
+                            nodeStatusCard(title: "存储空间", count: 85, total: 100, icon: "externaldrive.fill", color: .blue, unit: "%")
+                        }
+                        .padding(.vertical, 8)
+                    } else {
+                        // Mac水平布局
+                        HStack(spacing: AppSpacing.large) {
+                            nodeStatusCard(title: "在线节点", count: 3, total: 4, icon: "checkmark.circle.fill", color: .green)
+                            nodeStatusCard(title: "待同步文件", count: 15, total: nil, icon: "arrow.triangle.2.circlepath", color: .orange)
+                            nodeStatusCard(title: "存储空间", count: 85, total: 100, icon: "externaldrive.fill", color: .blue, unit: "%")
+                        }
+                        .padding(.vertical, 8)
                     }
-                    .padding(.vertical, 8)
                 }
                 .listRowBackground(Color.clear)
                 
@@ -154,6 +226,11 @@ struct SyncHistoryView: View {
                 Section(header: Text("节点详情").font(.headline).foregroundColor(.primary)) {
                     ForEach(filteredHistories) { history in
                         nodeListItem(history: history)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                // 点击操作
+                                generateHapticFeedback()
+                            }
                     }
                 }
             }
@@ -176,7 +253,7 @@ struct SyncHistoryView: View {
                     .font(.caption)
                     .foregroundColor(color)
                 
-                Text(total == nil ? "\(count)\(unit)" : "\(count)/\(total)\(unit)")
+                Text(total == nil ? "\(count)\(unit)" : "\(count)/\(String(describing: total))\(unit)")
                     .font(.title3)
                     .fontWeight(.semibold)
             }
@@ -190,51 +267,108 @@ struct SyncHistoryView: View {
     
     // 节点列表项
     private func nodeListItem(history: SyncHistory) -> some View {
-        HStack(spacing: Spacing.small) {
-            // 状态图标
-            ZStack {
-                Circle()
-                    .fill(statusColor(history.status))
-                    .frame(width: 32, height: 32)
-                
-                Image(systemName: statusIcon(history.status))
-                    .foregroundColor(.white)
-            }
-            
-            // 节点信息
-            VStack(alignment: .leading, spacing: 2) {
-                Text(history.details)
-                    .fontWeight(.medium)
-                
-                Text(formatDate(history.timestamp))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            
-            Spacer()
-            
-            // 右侧信息和按钮
-            HStack(spacing: 12) {
-                // 节点状态
-                Text(history.status.rawValue)
-                    .font(.caption)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(statusColor(history.status).opacity(0.1))
-                    .foregroundColor(statusColor(history.status))
-                    .cornerRadius(4)
-                
-                // 操作按钮
-                Button {
-                    // 节点操作
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .foregroundColor(.secondary)
+        Group {
+            if isPhone {
+                // iPhone简化版列表项
+                VStack(alignment: .leading, spacing: AppSpacing.small) {
+                    HStack {
+                        // 状态图标
+                        ZStack {
+                            Circle()
+                                .fill(statusColor(history.status))
+                                .frame(width: 28, height: 28)
+                            
+                            Image(systemName: statusIcon(history.status))
+                                .foregroundColor(.white)
+                                .font(.caption)
+                        }
+                        
+                        // 节点信息
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(history.details)
+                                .fontWeight(.medium)
+                                .lineLimit(1)
+                            
+                            Text(formatDate(history.timestamp))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.leading, 4)
+                        
+                        Spacer()
+                        
+                        // 节点状态
+                        Text(history.status.rawValue)
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(statusColor(history.status).opacity(0.1))
+                            .foregroundColor(statusColor(history.status))
+                            .cornerRadius(4)
+                    }
                 }
-                .buttonStyle(.plain)
+                .padding(.vertical, 6)
+                .contextMenu {
+                    Button {
+                        // 操作
+                    } label: {
+                        Label("查看详情", systemImage: "info.circle")
+                    }
+                    Button {
+                        // 操作
+                    } label: {
+                        Label("重新同步", systemImage: "arrow.clockwise")
+                    }
+                }
+            } else {
+                // Mac完整版列表项
+                HStack(spacing: AppSpacing.small) {
+                    // 状态图标
+                    ZStack {
+                        Circle()
+                            .fill(statusColor(history.status))
+                            .frame(width: 32, height: 32)
+                        
+                        Image(systemName: statusIcon(history.status))
+                            .foregroundColor(.white)
+                    }
+                    
+                    // 节点信息
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(history.details)
+                            .fontWeight(.medium)
+                        
+                        Text(formatDate(history.timestamp))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    Spacer()
+                    
+                    // 右侧信息和按钮
+                    HStack(spacing: 12) {
+                        // 节点状态
+                        Text(history.status.rawValue)
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(statusColor(history.status).opacity(0.1))
+                            .foregroundColor(statusColor(history.status))
+                            .cornerRadius(4)
+                        
+                        // 操作按钮
+                        Button {
+                            // 节点操作
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 6)
             }
         }
-        .padding(.vertical, 6)
     }
     
     // 状态图标
