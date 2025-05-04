@@ -18,11 +18,11 @@ struct FileItemView: View {
                     .font(.headline)
                 
                 HStack {
-                    Text(file.isDirectory ? "文件夹" : formatFileSize(file.size))
+                    Text(file.isDirectory ? "文件夹" : FormatUtilities.formatFileSize(file.size))
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
-                    Text(formatDate(file.modificationDate))
+                    Text(FormatUtilities.formatShortDate(file.modificationDate))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -86,22 +86,6 @@ struct FileItemView: View {
         default:
             return .gray
         }
-    }
-    
-    // 格式化文件大小
-    private func formatFileSize(_ size: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useKB, .useMB, .useGB]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: size)
-    }
-    
-    // 格式化日期
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .none
-        return formatter.string(from: date)
     }
     
     // 同步状态视图

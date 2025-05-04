@@ -1,5 +1,7 @@
 import SwiftUI
+import Foundation
 
+// 导入格式化工具
 struct SyncHistoryItemView: View {
     let history: SyncHistory
     
@@ -12,7 +14,7 @@ struct SyncHistoryItemView: View {
             
             // 同步详情
             VStack(alignment: .leading, spacing: 4) {
-                Text(formatDate(history.timestamp))
+                Text(FormatUtilities.formatDetailDate(history.timestamp))
                     .font(.headline)
                 
                 Text(history.details)
@@ -26,7 +28,7 @@ struct SyncHistoryItemView: View {
                     
                     Spacer()
                     
-                    Label(formatFileSize(history.totalSize), systemImage: "externaldrive.fill")
+                    Label(FormatUtilities.formatFileSize(history.totalSize), systemImage: "externaldrive.fill")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -86,18 +88,7 @@ struct SyncHistoryItemView: View {
     
     // 格式化日期
     private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
-    }
-    
-    // 格式化文件大小
-    private func formatFileSize(_ size: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useKB, .useMB, .useGB]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: size)
+        return FormatUtilities.formatDetailDate(date)
     }
 }
 
