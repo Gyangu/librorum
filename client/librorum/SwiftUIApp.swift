@@ -22,7 +22,7 @@ struct SwiftUIApp: App {
 
     var body: some Scene {
         WindowGroup {
-            MainView()
+            LaunchView()
                 .modelContainer(sharedModelContainer)
                 .environment(AppSettings.shared)
         }

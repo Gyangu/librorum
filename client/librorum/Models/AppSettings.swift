@@ -31,6 +31,9 @@ enum ThemeType: String, CaseIterable {
     /// 默认保存路径
     var defaultSavePath: String = "~/Documents/Librorum"
     
+    /// 服务器地址
+    var serverUrl: String = "http://localhost:50051"
+    
     /// 私有初始化方法
     private init() {
         // 从 UserDefaults 加载保存的设置
@@ -45,6 +48,7 @@ enum ThemeType: String, CaseIterable {
         UserDefaults.standard.set(allowCellularSync, forKey: "allowCellularSync")
         UserDefaults.standard.set(notificationsEnabled, forKey: "notificationsEnabled")
         UserDefaults.standard.set(defaultSavePath, forKey: "defaultSavePath")
+        UserDefaults.standard.set(serverUrl, forKey: "serverUrl")
     }
     
     /// 从 UserDefaults 加载设置
@@ -62,6 +66,10 @@ enum ThemeType: String, CaseIterable {
         if let path = UserDefaults.standard.string(forKey: "defaultSavePath") {
             defaultSavePath = path
         }
+        
+        if let url = UserDefaults.standard.string(forKey: "serverUrl") {
+            serverUrl = url
+        }
     }
     
     /// 重置为默认设置
@@ -72,6 +80,7 @@ enum ThemeType: String, CaseIterable {
         allowCellularSync = false
         notificationsEnabled = true
         defaultSavePath = "~/Documents/Librorum"
+        serverUrl = "http://localhost:50051"
         saveSettings()
     }
 } 

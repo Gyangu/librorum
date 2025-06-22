@@ -1,6 +1,6 @@
 use crate::config::NodeConfig;
 use crate::logger;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -9,6 +9,8 @@ use std::process::Command;
 
 #[cfg(all(unix, feature = "daemon-unix"))]
 use libc;
+#[cfg(all(unix, feature = "daemon-unix"))]
+use daemonize::Daemonize;
 
 #[cfg(all(windows, feature = "windows_service"))]
 use std::ffi::OsString;
