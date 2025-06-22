@@ -53,8 +53,21 @@ pub fn pid_dir_path() -> PathBuf {
 }
 
 /// PID 文件路径
-pub fn pid_file_path() -> PathBuf {
-    pid_dir_path().join("librorum.pid")
+/// 支持多实例的 PID 文件路径，根据 config 路径或端口号区分
+pub fn pid_file_path(config: &NodeConfig, config_path: Option<&std::path::Path>) -> PathBuf {
+    // 优先用端口号区分
+    let port = config.bind_port;
+    // 如果有 config_path，用文件名 hash
+    let instance_tag = if let Some(path) = config_path {
+        if let Some(fname) = path.file_stem() {
+            format!("{}_{}", fname.to_string_lossy(), port)
+        } else {
+            format!("port{}", port)
+        }
+    } else {
+        format!("port{}", port)
+    };
+    pid_dir_path().join(format!("librorum_{}.pid", instance_tag))
 }
 
 /// 获取可执行文件路径
@@ -117,7 +130,7 @@ fn service_main(_arguments: Vec<OsString>) {
 
 /// 启动守护进程 (Unix)
 #[cfg(all(unix, feature = "daemon-unix"))]
-pub fn start_daemon(config: &NodeConfig) -> Result<()> {
+pub fn start_daemon(config: &NodeConfig, config_path: Option<&std::path::Path>) -> Result<()> {
     // 检查verbose环境变量
     let verbose = std::env::var("LIBRORUM_VERBOSE").is_ok();
     
@@ -132,21 +145,12 @@ pub fn start_daemon(config: &NodeConfig) -> Result<()> {
     fs::create_dir_all(pid_dir_path())?;
 
     // 检查是否已经运行
-    if daemon_running() {
+    if daemon_running(config, config_path) {
         println!("服务已经在运行中");
         return Ok(());
     }
 
     let executable = get_executable_path()?;
-
-    // 配置守护进程
-    let daemonize = Daemonize::new()
-        .pid_file(pid_file_path())
-        .chown_pid_file(false) // 不要修改 PID 文件的所有权
-        .working_directory("."); // 保持当前工作目录
-
-    // 启动前输出提示
-    println!("Librorum 服务正在启动（守护进程）...");
 
     // 序列化配置以传递给子进程
     let config_str = toml::to_string(config).with_context(|| "无法序列化配置")?;
@@ -155,14 +159,18 @@ pub fn start_daemon(config: &NodeConfig) -> Result<()> {
     file.write_all(config_str.as_bytes())?;
 
     // 启动守护进程
+    let daemonize = Daemonize::new()
+        .pid_file(pid_file_path(config, config_path))
+        .chown_pid_file(false)
+        .working_directory(".");
+
     match daemonize.start() {
         Ok(_) => {
-            // 这部分代码在守护进程中执行
+            // 在守护进程内部
             let config_str = config_file.to_string_lossy();
             
-            // 检查是否在环境变量中设置了verbose模式
             let mut args = vec!["run", "--daemon", "--config", &config_str];
-            if std::env::var("LIBRORUM_VERBOSE").is_ok() {
+            if verbose {
                 args.push("--verbose");
             }
             
@@ -267,7 +275,7 @@ pub fn start_daemon(config: &NodeConfig) -> Result<()> {
 
 /// 启动Windows服务
 #[cfg(all(windows, feature = "windows_service"))]
-pub fn start_daemon(config: &NodeConfig) -> Result<()> {
+pub fn start_daemon(config: &NodeConfig, config_path: Option<&std::path::Path>) -> Result<()> {
     // 确保 PID 目录存在
     fs::create_dir_all(pid_dir_path())?;
 
@@ -279,45 +287,32 @@ pub fn start_daemon(config: &NodeConfig) -> Result<()> {
         } else if status.current_state == ServiceState::Stopped {
             // 服务已注册但已停止，启动它
             let service_manager = open_service_manager()?;
-            let service = service_manager
-                .open_service(SERVICE_NAME, ServiceAccess::START)
-                .with_context(|| format!("无法打开服务 {}", SERVICE_NAME))?;
-
-            // 序列化配置以传递给服务
-            let config_file = pid_dir_path().join("service_config.toml");
-            let config_str = toml::to_string(config).with_context(|| "无法序列化配置")?;
-            let mut file = fs::File::create(&config_file)?;
-            file.write_all(config_str.as_bytes())?;
-
-            service.start(&[config_file.to_str().unwrap()])?;
+            let service = service_manager.open_service(
+                SERVICE_NAME,
+                ServiceAccess::START | ServiceAccess::CHANGE_CONFIG,
+            )?;
+            service.start(&[])?;
             println!("Librorum 服务已启动");
             return Ok(());
         }
     }
 
-    // 服务未注册，先注册服务
+    // 服务未注册，注册并启动
     let service_manager = open_service_manager()?;
+
     let executable = get_executable_path()?;
 
     // 序列化配置以传递给服务
-    let config_file = pid_dir_path().join("service_config.toml");
     let config_str = toml::to_string(config).with_context(|| "无法序列化配置")?;
+    let config_file = pid_dir_path().join("tmp_config.toml");
     let mut file = fs::File::create(&config_file)?;
     file.write_all(config_str.as_bytes())?;
 
-    // 创建服务命令行
-    let service_cmd = format!(
-        "\"{}\" run --daemon --config=\"{}\"",
-        executable.display(),
-        config_file.display()
-    );
-
-    // 注册服务
     let service_info = ServiceInfo {
         name: OsString::from(SERVICE_NAME),
         display_name: OsString::from(SERVICE_DISPLAY_NAME),
         service_type: ServiceType::OWN_PROCESS,
-        start_type: ServiceStartType::AutoStart,
+        start_type: ServiceStartType::Auto,
         error_control: ServiceErrorControl::Normal,
         executable: executable.into(),
         launch_arguments: vec![OsString::from("run"), OsString::from("--daemon")],
@@ -368,8 +363,8 @@ fn get_service_status() -> Result<ServiceStatus> {
 
 /// 停止守护进程 (Unix)
 #[cfg(unix)]
-pub fn stop_daemon() -> Result<()> {
-    let pid_file = pid_file_path();
+pub fn stop_daemon(config: &NodeConfig, config_path: Option<&std::path::Path>) -> Result<()> {
+    let pid_file = pid_file_path(config, config_path);
 
     if !pid_file.exists() {
         println!("服务未运行");
@@ -386,12 +381,12 @@ pub fn stop_daemon() -> Result<()> {
 
     // 等待进程退出
     let mut attempts = 0;
-    while daemon_running() && attempts < 10 {
+    while daemon_running(config, config_path) && attempts < 10 {
         std::thread::sleep(std::time::Duration::from_millis(500));
         attempts += 1;
     }
 
-    if daemon_running() {
+    if daemon_running(config, config_path) {
         // 如果进程仍在运行，尝试强制终止
         unsafe {
             libc::kill(pid, libc::SIGKILL);
@@ -486,20 +481,20 @@ pub fn stop_daemon() -> Result<()> {
 }
 
 /// 重启守护进程
-pub fn restart_daemon(config: &NodeConfig) -> Result<()> {
-    stop_daemon()?;
+pub fn restart_daemon(config: &NodeConfig, config_path: Option<&std::path::Path>) -> Result<()> {
+    stop_daemon(config, config_path)?;
 
     // 等待一会儿确保服务完全停止
     std::thread::sleep(std::time::Duration::from_secs(2));
 
-    start_daemon(config)?;
+    start_daemon(config, config_path)?;
     Ok(())
 }
 
 /// 检查守护进程是否在运行 (Unix)
 #[cfg(unix)]
-pub fn daemon_running() -> bool {
-    let pid_file = pid_file_path();
+pub fn daemon_running(config: &NodeConfig, config_path: Option<&std::path::Path>) -> bool {
+    let pid_file = pid_file_path(config, config_path);
 
     if !pid_file.exists() {
         return false;
@@ -536,8 +531,8 @@ pub fn daemon_running() -> bool {
 
 /// 检查守护进程是否在运行 (Windows非Service)
 #[cfg(all(windows, not(feature = "windows_service")))]
-pub fn daemon_running() -> bool {
-    let pid_file = pid_file_path();
+pub fn daemon_running(config: &NodeConfig, config_path: Option<&std::path::Path>) -> bool {
+    let pid_file = pid_file_path(config, config_path);
 
     if !pid_file.exists() {
         return false;
@@ -568,7 +563,7 @@ pub fn daemon_running() -> bool {
 
 /// 检查Windows服务是否在运行
 #[cfg(all(windows, feature = "windows_service"))]
-pub fn daemon_running() -> bool {
+pub fn daemon_running(_config: &NodeConfig, _config_path: Option<&std::path::Path>) -> bool {
     match get_service_status() {
         Ok(status) => status.current_state == ServiceState::Running,
         Err(_) => false,
@@ -576,9 +571,9 @@ pub fn daemon_running() -> bool {
 }
 
 /// 获取守护进程状态信息
-pub fn daemon_status() -> String {
-    if daemon_running() {
-        let pid_file = pid_file_path();
+pub fn daemon_status(config: &NodeConfig, config_path: Option<&std::path::Path>) -> String {
+    if daemon_running(config, config_path) {
+        let pid_file = pid_file_path(config, config_path);
 
         #[cfg(not(all(windows, feature = "windows_service")))]
         let pid_info = match fs::read_to_string(&pid_file) {
@@ -616,9 +611,9 @@ pub fn view_logs(tail: usize) -> Result<String> {
 }
 
 /// 获取节点健康状态信息
-pub fn get_nodes_health_status() -> Result<String> {
+pub fn get_nodes_health_status(config: &NodeConfig, config_path: Option<&std::path::Path>) -> Result<String> {
     // 确保PID文件存在，服务正在运行
-    if !daemon_running() {
+    if !daemon_running(config, config_path) {
         return Err(anyhow::anyhow!("服务未运行"));
     }
 

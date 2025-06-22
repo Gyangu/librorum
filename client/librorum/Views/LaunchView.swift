@@ -22,6 +22,26 @@ struct LaunchView: View {
     
     private var launchScreen: some View {
         VStack(spacing: 20) {
+            // 添加跳过按钮在右上角
+            HStack {
+                Spacer()
+                Button(action: {
+                    // 直接跳转到主界面
+                    showMainView = true
+                }) {
+                    Text("跳过")
+                        .fontWeight(.medium)
+                        .foregroundColor(.accentColor)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.accentColor, lineWidth: 1)
+                        )
+                }
+                .padding(.trailing, 16)
+            }
+            
             // 应用标志
             Image(systemName: "server.rack")
                 .resizable()

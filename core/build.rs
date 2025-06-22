@@ -8,13 +8,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=src/proto");
     tonic_build::compile_protos("src/proto/node.proto")?;
 
-    // 添加新的文件变更监听
-    println!("cargo:rerun-if-changed=src/main.rs");
-    println!("cargo:rerun-if-changed=build.rs");
-
-    // 设置运行标志，确保复制操作在编译后执行
-    println!("cargo:rerun-if-env-changed=LIBRORUM_SKIP_COPY");
-
     // 获取当前目录的绝对路径
     let current_dir = env::current_dir().expect("无法获取当前目录");
     println!("当前工作目录: {:?}", current_dir);
@@ -69,40 +62,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 如果找不到二进制文件，尝试执行cargo命令构建它
-    if binary_path.is_none() {
-        println!("没有找到编译好的二进制文件，尝试执行cargo build");
-        let output = Command::new("cargo")
-            .arg("build")
-            .current_dir(&project_root)
-            .output();
-
-        match output {
-            Ok(output) => {
-                println!(
-                    "cargo build输出: {}",
-                    String::from_utf8_lossy(&output.stdout)
-                );
-                if !output.status.success() {
-                    println!(
-                        "cargo build错误: {}",
-                        String::from_utf8_lossy(&output.stderr)
-                    );
-                }
-            }
-            Err(e) => println!("执行cargo build失败: {}", e),
-        }
-
-        // 重新检查二进制文件
-        for path in &possible_binary_paths {
-            if path.exists() {
-                binary_path = Some(path);
-                println!("现在找到二进制文件: {:?}", path);
-                break;
-            }
-        }
-    }
-
     // 如果仍然找不到二进制文件，返回错误
     let binary_path = match binary_path {
         Some(path) => path.to_path_buf(),
@@ -115,12 +74,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
     };
-
-    // 如果设置了LIBRORUM_SKIP_COPY环境变量，跳过复制
-    if env::var("LIBRORUM_SKIP_COPY").is_ok() {
-        println!("检测到LIBRORUM_SKIP_COPY环境变量，跳过复制操作");
-        return Ok(());
-    }
 
     // 构建目标目录路径（client/librorum/Resources）
     let client_dir = project_root.join("client");
@@ -165,29 +118,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Err(e) => println!("执行cp命令失败: {}", e),
-            }
-        }
-
-        #[cfg(windows)]
-        {
-            let output = Command::new("cmd")
-                .args(&[
-                    "/C",
-                    "copy",
-                    binary_path.to_str().unwrap(),
-                    target_file.to_str().unwrap(),
-                ])
-                .output();
-
-            match output {
-                Ok(output) => {
-                    if output.status.success() {
-                        println!("使用copy命令成功复制文件");
-                    } else {
-                        println!("copy命令失败: {}", String::from_utf8_lossy(&output.stderr));
-                    }
-                }
-                Err(e) => println!("执行copy命令失败: {}", e),
             }
         }
     }

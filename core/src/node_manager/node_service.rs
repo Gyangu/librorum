@@ -65,6 +65,22 @@ impl NodeServiceImpl {
         }
     }
 
+    /// 创建带有共享节点列表的服务实例
+    pub fn with_shared_nodes(
+        node_id: String, 
+        address: String, 
+        system_info: String, 
+        shared_nodes: Arc<Mutex<HashMap<String, NodeConnection>>>
+    ) -> Self {
+        Self {
+            node_id: node_id.clone(),
+            address,
+            system_info,
+            nodes: shared_nodes,
+            health_monitor: None,
+        }
+    }
+
     /// 设置健康监控器
     pub fn with_health_monitor(mut self, health_monitor: Arc<HealthMonitor>) -> Self {
         self.health_monitor = Some(health_monitor);

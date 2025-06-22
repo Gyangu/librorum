@@ -1,0 +1,8 @@
+# 节点B配置
+[node]
+bind_ip = "127.0.0.1"
+bind_port = 50052
+node_prefix = "testB"
+
+[network]
+static_nodes = ["127.0.0.1:50051"]

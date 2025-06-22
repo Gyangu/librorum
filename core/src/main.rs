@@ -130,30 +130,35 @@ async fn main() -> Result<()> {
             }
             
             // 如果命令行参数中指定了配置文件，优先使用
-            if let Some(config_path) = cmd_config {
-                println!("使用指定的配置文件: {:?}", config_path);
-                let config = NodeConfig::from_file(config_path)
-                    .with_context(|| format!("无法加载配置文件: {:?}", config_path))?;
-                daemon::start_daemon(&config)?;
+            if let Some(cfg_path) = cmd_config {
+                println!("使用指定的配置文件: {:?}", cfg_path);
+                let config = NodeConfig::from_file(cfg_path)
+                    .with_context(|| format!("无法加载配置文件: {:?}", cfg_path))?;
+                daemon::start_daemon(&config, Some(cfg_path.as_path()))?;
             } else {
                 // 否则使用自动检测的配置
                 let config = load_config(&cli)?;
-                daemon::start_daemon(&config)?;
+                daemon::start_daemon(&config, None)?;
             }
         }
 
         Command::Stop => {
-            daemon::stop_daemon()?;
+            let config = load_config(&cli)?;
+            let config_path = cli.config.as_ref().map(|p| p.as_path());
+            daemon::stop_daemon(&config, config_path)?;
         }
 
         Command::Restart => {
             // 加载配置
             let config = load_config(&cli)?;
-            daemon::restart_daemon(&config)?;
+            let config_path = cli.config.as_ref().map(|p| p.as_path());
+            daemon::restart_daemon(&config, config_path)?;
         }
 
         Command::Status => {
-            let status = daemon::daemon_status();
+            let config = load_config(&cli)?;
+            let config_path = cli.config.as_ref().map(|p| p.as_path());
+            let status = daemon::daemon_status(&config, config_path);
             println!("{}", status);
         }
 
@@ -184,14 +189,16 @@ async fn main() -> Result<()> {
 
         Command::NodesStatus => {
             // 获取服务状态，确保服务在运行
-            let status = daemon::daemon_status();
+            let config = load_config(&cli)?;
+            let config_path = cli.config.as_ref().map(|p| p.as_path());
+            let status = daemon::daemon_status(&config, config_path);
             if !status.contains("正在运行") {
                 println!("错误: 服务未运行，请先启动服务");
                 return Ok(());
             }
 
             // 尝试获取节点健康状态
-            match daemon::get_nodes_health_status() {
+            match daemon::get_nodes_health_status(&config, config_path) {
                 Ok(status) => {
                     println!("节点健康状态:");
                     println!("{}", status);

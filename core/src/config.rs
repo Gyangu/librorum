@@ -192,3 +192,100 @@ impl NodeConfig {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    use std::io::Write;
+
+    #[test]
+    fn test_default_config() {
+        let config = NodeConfig::default();
+        assert_eq!(config.node_prefix, "node");
+        assert_eq!(config.bind_host, "0.0.0.0");
+        assert_eq!(config.bind_port, 50051);
+        assert_eq!(config.log_level, "info");
+        assert_eq!(config.heartbeat_interval, 5);
+        assert_eq!(config.discovery_interval, 10);
+        assert!(config.known_nodes.is_empty());
+    }
+
+    #[test]
+    fn test_bind_address() {
+        let config = NodeConfig {
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 8080,
+            ..Default::default()
+        };
+        assert_eq!(config.bind_address(), "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn test_save_and_load_config() -> Result<()> {
+        let config = NodeConfig {
+            node_prefix: "test_node".to_string(),
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 9999,
+            log_level: "debug".to_string(),
+            heartbeat_interval: 3,
+            discovery_interval: 15,
+            known_nodes: vec!["node1.local".to_string(), "node2.local".to_string()],
+            ..Default::default()
+        };
+
+        let temp_file = NamedTempFile::new()?;
+        let temp_path = temp_file.path().to_path_buf();
+
+        config.save_to_file(&temp_path)?;
+
+        let loaded_config = NodeConfig::from_file(&temp_path)?;
+
+        assert_eq!(loaded_config.node_prefix, config.node_prefix);
+        assert_eq!(loaded_config.bind_host, config.bind_host);
+        assert_eq!(loaded_config.bind_port, config.bind_port);
+        assert_eq!(loaded_config.log_level, config.log_level);
+        assert_eq!(loaded_config.heartbeat_interval, config.heartbeat_interval);
+        assert_eq!(loaded_config.discovery_interval, config.discovery_interval);
+        assert_eq!(loaded_config.known_nodes, config.known_nodes);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_invalid_config() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "invalid toml content [[[").unwrap();
+        let temp_path = temp_file.path();
+
+        let result = NodeConfig::from_file(temp_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_nonexistent_config() {
+        let result = NodeConfig::from_file("/nonexistent/file.toml");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_partial_config() -> Result<()> {
+        let toml_content = r#"
+            node_prefix = "custom_node"
+            bind_port = 8888
+        "#;
+
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "{}", toml_content)?;
+        let temp_path = temp_file.path();
+
+        let config = NodeConfig::from_file(temp_path)?;
+
+        assert_eq!(config.node_prefix, "custom_node");
+        assert_eq!(config.bind_host, "0.0.0.0"); // 应使用默认值
+        assert_eq!(config.bind_port, 8888);
+        assert_eq!(config.log_level, "info"); // 应使用默认值
+
+        Ok(())
+    }
+}
