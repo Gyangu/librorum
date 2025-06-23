@@ -7,7 +7,6 @@
 use crate::vdfs::{VDFSResult, VirtualPath, FileId, OpenMode, DirEntry, FilePermissions};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::io::SeekFrom;
 use std::time::SystemTime;
 use uuid::Uuid;
 

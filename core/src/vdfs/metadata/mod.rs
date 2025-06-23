@@ -6,15 +6,26 @@ use crate::vdfs::{VDFSResult, VirtualPath, FileId, ChunkId, NodeId};
 use crate::vdfs::filesystem::FileMetadata;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 pub mod manager;
 pub mod index;
 pub mod consistency;
+pub mod database;
+pub mod sled_manager;
+pub mod rocksdb_manager;
+
+#[cfg(test)]
+pub mod performance_tests;
 
 pub use manager::SimpleMetadataManager;
+pub use database::DatabaseMetadataManager;
+pub use sled_manager::SledMetadataManager;
+pub use rocksdb_manager::RocksDBMetadataManager;
 pub use index::{IndexStore, FileIndex};
 pub use consistency::ConsistencyManager;
+
+// 默认使用 Sled 作为元数据管理器
+pub type DefaultMetadataManager = SledMetadataManager;
 
 /// Complete file information including chunks and replicas
 #[derive(Debug, Clone, Serialize, Deserialize)]

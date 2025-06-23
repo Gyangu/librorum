@@ -3,7 +3,7 @@
 use crate::vdfs::{VDFSResult, VDFSError, Chunk, ChunkId};
 use crate::vdfs::filesystem::{VirtualFileSystem, FileHandle, FileMetadata};
 use crate::vdfs::storage::{StorageBackend, DefaultChunkManager};
-use crate::vdfs::metadata::{SimpleMetadataManager, MetadataManager, FileInfo, ChunkMetadata};
+use crate::vdfs::metadata::{MetadataManager, FileInfo, ChunkMetadata};
 use crate::vdfs::{VirtualPath, OpenMode, DirEntry, FileId};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -38,6 +38,7 @@ impl VirtualFileSystemImpl {
     }
     
     /// Helper method to split file data into chunks and store them
+    #[allow(dead_code)]
     async fn store_file_data(&self, _file_id: FileId, data: &[u8]) -> VDFSResult<Vec<ChunkId>> {
         let chunks = self.chunk_manager.split_file(data)?;
         let mut chunk_ids = Vec::new();
@@ -52,6 +53,7 @@ impl VirtualFileSystemImpl {
     }
     
     /// Helper method to retrieve and reassemble file data from chunks
+    #[allow(dead_code)]
     async fn retrieve_file_data(&self, chunk_ids: &[ChunkId]) -> VDFSResult<Vec<u8>> {
         let mut chunks = Vec::new();
         
@@ -559,7 +561,7 @@ mod tests {
             temp_dir.path().to_path_buf(),
             "test_node".to_string(),
         ).unwrap());
-        let metadata = Arc::new(SimpleMetadataManager::new());
+        let metadata = Arc::new(crate::vdfs::metadata::SimpleMetadataManager::new());
         
         VirtualFileSystemImpl::new(storage, metadata, 1024)
     }

@@ -1,6 +1,6 @@
 //! File Handle Implementation
 
-use crate::vdfs::{VDFSResult, VDFSError, VirtualPath, FileId, OpenMode, ChunkId};
+use crate::vdfs::{VDFSResult, VDFSError, VirtualPath, FileId, OpenMode};
 use crate::vdfs::filesystem::FileMetadata;
 use crate::vdfs::storage::{StorageBackend, DefaultChunkManager};
 use crate::vdfs::metadata::{MetadataManager, FileInfo, ChunkMetadata};

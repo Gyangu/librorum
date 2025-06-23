@@ -4,7 +4,6 @@ use crate::vdfs::{VDFSResult, VDFSError, ChunkId, ChunkInfo, StorageInfo, NodeId
 use crate::vdfs::storage::StorageBackend;
 use async_trait::async_trait;
 use std::path::PathBuf;
-use std::collections::HashSet;
 use tokio::fs;
 use walkdir::WalkDir;
 
@@ -605,7 +604,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_integrity_verification() {
-        let (storage, temp_dir) = create_test_storage().await;
+        let (storage, _temp_dir) = create_test_storage().await;
         
         let test_data = b"test data for integrity";
         let chunk_id = create_test_chunk_id(test_data);

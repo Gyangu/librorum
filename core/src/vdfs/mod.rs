@@ -219,7 +219,7 @@ pub enum CacheKey {
 }
 
 /// Cache value for caching operations
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CacheValue {
     FileMetadata(FileMetadata),
     FileData(Vec<u8>),
@@ -330,7 +330,7 @@ impl Default for CacheConfig {
 
 /// Main VDFS instance
 pub struct VDFS {
-    config: VDFSConfig,
+    _config: VDFSConfig,
     filesystem: Box<dyn VirtualFileSystem>,
     storage: Box<dyn StorageBackend>,
     // metadata: Box<dyn MetadataManager>, // TODO: implement when ready
@@ -339,7 +339,7 @@ pub struct VDFS {
 
 impl VDFS {
     /// Create a new VDFS instance
-    pub fn new(config: VDFSConfig) -> VDFSResult<Self> {
+    pub fn new(_config: VDFSConfig) -> VDFSResult<Self> {
         // This will be implemented when we have the component implementations
         Err(VDFSError::InternalError("VDFS construction not yet implemented".to_string()))
     }

@@ -35,3 +35,24 @@ Thumbs.db
 logs/
 buildServer.json
 build/
+
+# Swift/Xcode specific
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+DerivedData/
+*.hmap
+*.ipa
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# VDFS runtime directories (cache and databases)
+core/vdfs_disk_cache/
+core/vdfs_cache/
+core/sled_db/
+core/rocksdb_test/

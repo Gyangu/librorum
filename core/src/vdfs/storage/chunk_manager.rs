@@ -4,7 +4,6 @@
 
 use crate::vdfs::{VDFSResult, VDFSError, Chunk, ChunkId};
 use std::collections::{HashMap, HashSet};
-use sha2::{Sha256, Digest};
 
 /// 默认分块管理器实现
 /// 
