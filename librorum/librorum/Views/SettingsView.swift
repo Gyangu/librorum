@@ -51,7 +51,11 @@ struct SettingsView: View {
                 )
                 
                 // Actions
-                SettingsActionsSection(coreManager: coreManager)
+                SettingsActionsSection(
+                    preferences: currentPreferences,
+                    coreManager: coreManager,
+                    onUpdate: savePreferences
+                )
             }
             .navigationTitle("设置")
             #if os(iOS)
@@ -300,7 +304,9 @@ struct AppSettingsSection: View {
 }
 
 struct SettingsActionsSection: View {
+    let preferences: UserPreferences?
     let coreManager: CoreManager
+    let onUpdate: () -> Void
     @State private var showingResetAlert = false
     @State private var showingRestartAlert = false
     
@@ -335,7 +341,7 @@ struct SettingsActionsSection: View {
             .alert("重置设置", isPresented: $showingResetAlert) {
                 Button("取消", role: .cancel) { }
                 Button("重置", role: .destructive) {
-                    // TODO: Implement reset
+                    resetToDefaults()
                 }
             } message: {
                 Text("这将重置所有设置到默认值，此操作不可撤销。")
@@ -343,9 +349,93 @@ struct SettingsActionsSection: View {
         }
     }
     
+    private func resetToDefaults() {
+        guard let currentPreferences = preferences else { return }
+        
+        // Reset all properties to their default values
+        currentPreferences.autoStartBackend = true
+        currentPreferences.startupStrategy = "automatic"
+        currentPreferences.logLevel = "info"
+        currentPreferences.bindPort = 50051
+        currentPreferences.bindHost = "0.0.0.0"
+        currentPreferences.heartbeatInterval = 30
+        currentPreferences.discoveryInterval = 60
+        currentPreferences.enableCompression = true
+        currentPreferences.defaultReplicationFactor = 3
+        currentPreferences.chunkSize = 1048576 // 1MB
+        currentPreferences.maxLogFiles = 10
+        currentPreferences.logRotationDays = 7
+        currentPreferences.enableNotifications = true
+        currentPreferences.theme = "auto"
+        currentPreferences.language = "zh"
+        
+        // Reset data directory to default
+        #if os(macOS)
+        currentPreferences.dataDirectory = NSHomeDirectory() + "/Library/Application Support/librorum"
+        #else
+        currentPreferences.dataDirectory = NSHomeDirectory() + "/Documents/librorum"
+        #endif
+        
+        // Save changes
+        onUpdate()
+        
+        print("✅ Settings reset to defaults")
+    }
+    
     private func cleanLogFiles() async {
-        // TODO: Implement log cleanup
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        do {
+            guard let communicator = coreManager.grpcCommunicator else {
+                print("未连接到后端服务")
+                return
+            }
+            
+            // Clear all logs via gRPC
+            let result = try await communicator.clearLogs(clearAll: true, beforeTimestamp: 0)
+            
+            if result.success {
+                print("✅ Logs cleared successfully: \(result.clearedCount) entries removed")
+                
+                // Also clear any local log files if they exist
+                let logDirectory = preferences?.dataDirectory.appending("/logs") ?? ""
+                if !logDirectory.isEmpty {
+                    await cleanLocalLogFiles(directory: logDirectory)
+                }
+            } else {
+                print("❌ Failed to clear logs: \(result.message)")
+            }
+        } catch {
+            print("❌ Error clearing logs: \(error)")
+            // Fallback to local cleanup only
+            let logDirectory = preferences?.dataDirectory.appending("/logs") ?? ""
+            if !logDirectory.isEmpty {
+                await cleanLocalLogFiles(directory: logDirectory)
+            }
+        }
+    }
+    
+    private func cleanLocalLogFiles(directory: String) async {
+        let fileManager = FileManager.default
+        
+        do {
+            guard fileManager.fileExists(atPath: directory) else {
+                print("📁 Log directory doesn't exist: \(directory)")
+                return
+            }
+            
+            let contents = try fileManager.contentsOfDirectory(atPath: directory)
+            let logFiles = contents.filter { $0.hasSuffix(".log") || $0.hasSuffix(".txt") }
+            
+            var removedCount = 0
+            for logFile in logFiles {
+                let fullPath = directory + "/" + logFile
+                try fileManager.removeItem(atPath: fullPath)
+                removedCount += 1
+            }
+            
+            print("✅ Cleaned \(removedCount) local log files from \(directory)")
+        } catch {
+            print("❌ Error cleaning local log files: \(error)")
+        }
     }
 }
 

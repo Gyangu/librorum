@@ -16,7 +16,7 @@ final class SyncHistory {
     var filePath: String
     var sourceNode: String
     var targetNode: String?
-    var status: SyncStatus
+    var status: SyncHistoryStatus
     var errorMessage: String?
     var bytesTransferred: Int64
     var duration: TimeInterval
@@ -29,7 +29,7 @@ final class SyncHistory {
         filePath: String,
         sourceNode: String,
         targetNode: String? = nil,
-        status: SyncStatus = .pending,
+        status: SyncHistoryStatus = .pending,
         errorMessage: String? = nil,
         bytesTransferred: Int64 = 0,
         duration: TimeInterval = 0,
@@ -89,7 +89,7 @@ enum SyncOperation: String, CaseIterable, Codable {
     }
 }
 
-enum SyncStatus: String, CaseIterable, Codable {
+enum SyncHistoryStatus: String, CaseIterable, Codable {
     case pending = "pending"
     case inProgress = "in_progress"
     case completed = "completed"

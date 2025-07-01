@@ -7,21 +7,29 @@
 
 import SwiftUI
 import SwiftData
+#if os(macOS)
+import AppKit
+import UniformTypeIdentifiers
+#elseif os(iOS)
+import UIKit
+#endif
 
 struct LogsView: View {
     let coreManager: CoreManager
-    @State private var logEntries: [LogEntry] = []
+    @State private var logEntries: [LogEntryData] = []
     @State private var isLoading = false
     @State private var selectedLogLevel: LogLevel = .all
     @State private var searchText = ""
     @State private var autoRefresh = true
     @State private var refreshTimer: Timer?
     @State private var showingExportSheet = false
+    @State private var isStreaming = false
+    @State private var streamTask: Task<Void, Never>?
     
-    var filteredLogs: [LogEntry] {
+    var filteredLogs: [LogEntryData] {
         logEntries
             .filter { entry in
-                if selectedLogLevel != .all && entry.level != selectedLogLevel {
+                if selectedLogLevel != .all && entry.level.rawValue != selectedLogLevel.rawValue {
                     return false
                 }
                 if !searchText.isEmpty && !entry.message.localizedCaseInsensitiveContains(searchText) {
@@ -39,6 +47,7 @@ struct LogsView: View {
                 selectedLogLevel: $selectedLogLevel,
                 searchText: $searchText,
                 autoRefresh: $autoRefresh,
+                isStreaming: $isStreaming,
                 onRefresh: {
                     await refreshLogs()
                 },
@@ -47,6 +56,15 @@ struct LogsView: View {
                 },
                 onClear: {
                     clearLogs()
+                },
+                onStartStreaming: {
+                    startLogStreaming()
+                },
+                onStopStreaming: {
+                    stopLogStreaming()
+                },
+                onCopyLogs: {
+                    copyLogsToClipboard()
                 }
             )
             
@@ -80,7 +98,7 @@ struct LogsView: View {
             }
         }
         .sheet(isPresented: $showingExportSheet) {
-            LogExportSheet(logs: filteredLogs)
+            LogExportSheet(logs: filteredLogs, coreManager: coreManager)
         }
     }
     
@@ -96,13 +114,27 @@ struct LogsView: View {
         }
     }
     
-    private func loadLogEntries() async throws -> [LogEntry] {
-        // TODO: Implement actual log loading from backend
-        // For now, return mock data
-        return generateMockLogs()
+    private func loadLogEntries() async throws -> [LogEntryData] {
+        guard let communicator = coreManager.grpcCommunicator else {
+            throw LogError.notConnected
+        }
+        
+        do {
+            let result = try await communicator.getLogs(
+                limit: 100,
+                levelFilter: selectedLogLevel == .all ? "" : selectedLogLevel.rawValue,
+                moduleFilter: "",
+                searchText: searchText,
+                reverse: true
+            )
+            return result.logs
+        } catch {
+            print("Failed to load logs from gRPC: \(error)")
+            return generateMockLogs()
+        }
     }
     
-    private func generateMockLogs() -> [LogEntry] {
+    private func generateMockLogs() -> [LogEntryData] {
         let levels: [LogLevel] = [.info, .warn, .error, .debug, .trace]
         let messages = [
             "Backend service started successfully",
@@ -117,18 +149,32 @@ struct LogsView: View {
             "Health check passed"
         ]
         
-        return (0..<100).map { index in
-            LogEntry(
+        return (0..<20).map { index in
+            LogEntryData(
                 timestamp: Date().addingTimeInterval(-Double(index * 30)),
-                level: levels.randomElement() ?? .info,
+                level: CommunicatorLogLevel.allCases.randomElement() ?? .info,
                 module: ["core", "network", "storage", "grpc"].randomElement() ?? "core",
-                message: messages.randomElement() ?? "Log message \(index)"
+                message: messages.randomElement() ?? "Log message \(index)",
+                threadId: "ThreadId(1)",
+                file: "main.rs",
+                line: 42,
+                fields: [:]
             )
         }
     }
     
     private func clearLogs() {
-        logEntries.removeAll()
+        Task {
+            do {
+                guard let communicator = coreManager.grpcCommunicator else { return }
+                let _ = try await communicator.clearLogs(clearAll: true, beforeTimestamp: 0)
+                await refreshLogs()
+            } catch {
+                print("Failed to clear logs: \(error)")
+                // Fallback to local clear
+                logEntries.removeAll()
+            }
+        }
     }
     
     private func startAutoRefresh() {
@@ -145,15 +191,84 @@ struct LogsView: View {
         refreshTimer?.invalidate()
         refreshTimer = nil
     }
+    
+    private func startLogStreaming() {
+        guard let communicator = coreManager.grpcCommunicator else { return }
+        
+        // Stop existing stream
+        stopLogStreaming()
+        
+        streamTask = Task {
+            do {
+                let logStream = try await communicator.streamLogs(
+                    levelFilter: selectedLogLevel == .all ? "" : selectedLogLevel.rawValue,
+                    moduleFilter: "",
+                    follow: true,
+                    tail: 10
+                )
+                
+                for try await logEntry in logStream {
+                    await MainActor.run {
+                        logEntries.insert(logEntry, at: 0)
+                        
+                        // Keep only the most recent 500 entries to prevent memory issues
+                        if logEntries.count > 500 {
+                            logEntries = Array(logEntries.prefix(500))
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isStreaming = false
+                    print("日志流失败: \(error)")
+                }
+            }
+        }
+    }
+    
+    private func stopLogStreaming() {
+        streamTask?.cancel()
+        streamTask = nil
+    }
+    
+    private func copyLogsToClipboard() {
+        let logText = formatLogsForClipboard(filteredLogs)
+        
+        #if os(macOS)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(logText, forType: .string)
+        #elseif os(iOS)
+        UIPasteboard.general.string = logText
+        #endif
+        
+        print("✅ LogsView: Copied \(filteredLogs.count) log entries to clipboard")
+    }
+    
+    private func formatLogsForClipboard(_ logs: [LogEntryData]) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        
+        return logs.map { log in
+            let timestamp = formatter.string(from: log.timestamp)
+            let level = log.level.displayName.uppercased()
+            let module = log.module.uppercased()
+            return "[\(timestamp)] [\(level)] [\(module)] \(log.message)"
+        }.joined(separator: "\n")
+    }
 }
 
 struct LogControlsView: View {
     @Binding var selectedLogLevel: LogLevel
     @Binding var searchText: String
     @Binding var autoRefresh: Bool
+    @Binding var isStreaming: Bool
     let onRefresh: () async -> Void
     let onExport: () -> Void
     let onClear: () -> Void
+    let onStartStreaming: () -> Void
+    let onStopStreaming: () -> Void
+    let onCopyLogs: () -> Void
     
     var body: some View {
         VStack(spacing: 12) {
@@ -170,6 +285,16 @@ struct LogControlsView: View {
                 
                 Toggle("自动刷新", isOn: $autoRefresh)
                     .toggleStyle(SwitchToggleStyle())
+                
+                Toggle("实时流", isOn: $isStreaming)
+                    .toggleStyle(SwitchToggleStyle())
+                    .onChange(of: isStreaming) { oldValue, newValue in
+                        if newValue {
+                            onStartStreaming()
+                        } else {
+                            onStopStreaming()
+                        }
+                    }
             }
             
             // Bottom row: Search and actions
@@ -178,6 +303,11 @@ struct LogControlsView: View {
                 
                 Button("刷新") {
                     Task { await onRefresh() }
+                }
+                .buttonStyle(BorderedButtonStyle())
+                
+                Button("复制日志") {
+                    onCopyLogs()
                 }
                 .buttonStyle(BorderedButtonStyle())
                 
@@ -227,10 +357,11 @@ struct SearchField: View {
 }
 
 struct LogListView: View {
-    let logs: [LogEntry]
+    let logs: [LogEntryData]
     
     var body: some View {
-        List(logs, id: \.id) { log in
+        List(logs.indices, id: \.self) { index in
+            let log = logs[index]
             LogEntryRow(entry: log)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
@@ -240,7 +371,7 @@ struct LogListView: View {
 }
 
 struct LogEntryRow: View {
-    let entry: LogEntry
+    let entry: LogEntryData
     @State private var isExpanded = false
     
     var body: some View {
@@ -299,6 +430,47 @@ struct LogEntryRow: View {
                 isExpanded.toggle()
             }
         }
+        .contextMenu {
+            Button("复制此条日志") {
+                copyLogEntryToClipboard(entry)
+            }
+            
+            Button("复制消息内容") {
+                copyMessageToClipboard(entry.message)
+            }
+        }
+    }
+    
+    private func copyLogEntryToClipboard(_ entry: LogEntryData) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        
+        let timestamp = formatter.string(from: entry.timestamp)
+        let level = entry.level.displayName.uppercased()
+        let module = entry.module.uppercased()
+        let logText = "[\(timestamp)] [\(level)] [\(module)] \(entry.message)"
+        
+        #if os(macOS)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(logText, forType: .string)
+        #elseif os(iOS)
+        UIPasteboard.general.string = logText
+        #endif
+        
+        print("✅ LogEntryRow: Copied log entry to clipboard")
+    }
+    
+    private func copyMessageToClipboard(_ message: String) {
+        #if os(macOS)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(message, forType: .string)
+        #elseif os(iOS)
+        UIPasteboard.general.string = message
+        #endif
+        
+        print("✅ LogEntryRow: Copied message to clipboard")
     }
 }
 
@@ -326,10 +498,12 @@ struct LogEmptyStateView: View {
 }
 
 struct LogExportSheet: View {
-    let logs: [LogEntry]
+    let logs: [LogEntryData]
+    let coreManager: CoreManager
     @Environment(\.dismiss) private var dismiss
     @State private var selectedFormat: ExportFormat = .text
     @State private var isExporting = false
+    @State private var exportError: String?
     
     var body: some View {
         NavigationView {
@@ -357,9 +531,17 @@ struct LogExportSheet: View {
                         .foregroundColor(.secondary)
                 }
                 
-                Button(action: {
-                    Task { await exportLogs() }
-                }) {
+                VStack {
+                    if let exportError = exportError {
+                        Text("导出失败: \(exportError)")
+                            .foregroundColor(.red)
+                            .font(.caption)
+                            .padding(.bottom, 8)
+                    }
+                    
+                    Button(action: {
+                        Task { await exportLogs() }
+                    }) {
                     HStack {
                         if isExporting {
                             ProgressView()
@@ -375,6 +557,7 @@ struct LogExportSheet: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .disabled(isExporting)
+                }
                 
                 Spacer()
             }
@@ -395,23 +578,76 @@ struct LogExportSheet: View {
     
     private func exportLogs() async {
         isExporting = true
+        exportError = nil
         defer { isExporting = false }
         
-        // TODO: Implement actual log export
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        do {
+            guard let communicator = coreManager.grpcCommunicator else {
+                exportError = "未连接到后端服务"
+                return
+            }
+            
+            let grpcFormat: LogExportFormat
+            switch selectedFormat {
+            case .text:
+                grpcFormat = .plain
+            case .json:
+                grpcFormat = .json
+            case .csv:
+                grpcFormat = .csv
+            }
+            
+            let result = try await communicator.exportLogs(
+                format: grpcFormat,
+                levelFilter: "",
+                moduleFilter: ""
+            )
+            
+            if result.success {
+                // Save the exported data
+                await saveExportedData(result.data, filename: result.filename, mimeType: result.mimeType)
+                dismiss()
+            } else {
+                exportError = "导出失败"
+            }
+        } catch {
+            exportError = "导出失败: \(error.localizedDescription)"
+        }
+    }
+    
+    @MainActor
+    private func saveExportedData(_ data: Data, filename: String, mimeType: String) async {
+        #if os(macOS)
+        let savePanel = NSSavePanel()
+        savePanel.nameFieldStringValue = filename
+        savePanel.allowedContentTypes = [.plainText, .json, .commaSeparatedText]
         
-        dismiss()
+        if savePanel.runModal() == .OK, let url = savePanel.url {
+            do {
+                try data.write(to: url)
+                print("✅ Log export saved to: \(url.path)")
+            } catch {
+                exportError = "保存文件失败: \(error.localizedDescription)"
+            }
+        }
+        #else
+        // iOS: Use share sheet instead of save panel
+        let activityController = UIActivityViewController(activityItems: [data], applicationActivities: nil)
+        
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let window = windowScene.windows.first,
+           let rootViewController = window.rootViewController {
+            rootViewController.present(activityController, animated: true)
+        }
+        #endif
     }
 }
 
 // MARK: - Data Models
 
-struct LogEntry: Identifiable {
-    let id = UUID()
-    let timestamp: Date
-    let level: LogLevel
-    let module: String
-    let message: String
+enum LogError: Error {
+    case notConnected
+    case loadFailed(String)
 }
 
 enum LogLevel: String, CaseIterable {
@@ -441,6 +677,31 @@ enum LogLevel: String, CaseIterable {
         case .info: return .green
         case .warn: return .orange
         case .error: return .red
+        }
+    }
+}
+
+// Extension to convert CommunicatorLogLevel to LogLevel for UI
+extension CommunicatorLogLevel {
+    var color: Color {
+        switch self {
+        case .unknown: return .gray
+        case .trace: return .gray
+        case .debug: return .blue
+        case .info: return .green
+        case .warn: return .orange
+        case .error: return .red
+        }
+    }
+    
+    var displayName: String {
+        switch self {
+        case .unknown: return "UNKNOWN"
+        case .trace: return "TRACE"
+        case .debug: return "DEBUG"
+        case .info: return "INFO"
+        case .warn: return "WARN"
+        case .error: return "ERROR"
         }
     }
 }

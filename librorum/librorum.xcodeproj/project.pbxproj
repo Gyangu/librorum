@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		055E91822E1452E400ABF8C6 /* GRPCCore in Frameworks */ = {isa = PBXBuildFile; productRef = 05CCF5E32E0AC2B70016CC96 /* GRPCCore */; };
+		055E91832E1452E400ABF8C6 /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = 05CCF5E52E0AC2B70016CC98 /* SwiftProtobuf */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		05C4B37C2E094FCB00859576 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +57,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				055E91832E1452E400ABF8C6 /* SwiftProtobuf in Frameworks */,
+				055E91822E1452E400ABF8C6 /* GRPCCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +119,8 @@
 			);
 			name = librorum;
 			packageProductDependencies = (
+				05CCF5E32E0AC2B70016CC96 /* GRPCCore */,
+				05CCF5E52E0AC2B70016CC98 /* SwiftProtobuf */,
 			);
 			productName = librorum;
 			productReference = 05C4B36C2E094FCA00859576 /* librorum.app */;
@@ -196,7 +205,8 @@
 			mainGroup = 05C4B3632E094FCA00859576;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				05CCF5E22E0AC2B60016CC96 /* XCRemoteSwiftPackageReference "grpc-swift" */,
+				05CCF5E22E0AC2B60016CC96 /* XCRemoteSwiftPackageReference "grpc-swift-2" */,
+				05CCF5E62E0AC2B80016CC99 /* XCRemoteSwiftPackageReference "swift-protobuf" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 05C4B36D2E094FCA00859576 /* Products */;
@@ -614,15 +624,36 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		05CCF5E22E0AC2B60016CC96 /* XCRemoteSwiftPackageReference "grpc-swift" */ = {
+		05CCF5E22E0AC2B60016CC96 /* XCRemoteSwiftPackageReference "grpc-swift-2" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/grpc/grpc-swift";
+			repositoryURL = "https://github.com/grpc/grpc-swift-2";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 2.2.3;
+				minimumVersion = 2.0.0;
+			};
+		};
+		05CCF5E62E0AC2B80016CC99 /* XCRemoteSwiftPackageReference "swift-protobuf" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-protobuf";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.28.1;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		05CCF5E32E0AC2B70016CC96 /* GRPCCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 05CCF5E22E0AC2B60016CC96 /* XCRemoteSwiftPackageReference "grpc-swift-2" */;
+			productName = GRPCCore;
+		};
+		05CCF5E52E0AC2B70016CC98 /* SwiftProtobuf */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 05CCF5E62E0AC2B80016CC99 /* XCRemoteSwiftPackageReference "swift-protobuf" */;
+			productName = SwiftProtobuf;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 05C4B3642E094FCA00859576 /* Project object */;
 }

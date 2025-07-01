@@ -26,6 +26,9 @@ struct DashboardView: View {
                 // Network Status
                 NetworkStatusSection(coreManager: coreManager)
                 
+                // Performance Monitoring
+                PerformanceMonitoringSection(coreManager: coreManager)
+                
                 // Recent Activity
                 RecentActivitySection()
             }
@@ -317,6 +320,161 @@ struct ActivityRow: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
+    }
+}
+
+// MARK: - Performance Monitoring Section
+
+struct PerformanceMonitoringSection: View {
+    let coreManager: CoreManager
+    @State private var systemHealth: CommunicatorSystemHealthData?
+    @State private var isLoading = false
+    @State private var refreshTimer: Timer?
+    
+    var body: some View {
+        GroupBox("性能监控") {
+            VStack(spacing: 16) {
+                if let health = systemHealth {
+                    // CPU Usage
+                    PerformanceGauge(
+                        title: "CPU",
+                        value: health.cpuUsage,
+                        unit: "%",
+                        color: health.cpuUsage > 80 ? .red : health.cpuUsage > 60 ? .orange : .green
+                    )
+                    
+                    // Memory Usage
+                    PerformanceGauge(
+                        title: "内存",
+                        value: Double(health.memoryUsage) / 1024.0 / 1024.0 / 1024.0 * 100, // Convert to GB percentage
+                        unit: "%",
+                        color: health.memoryUsage > 80 ? .red : health.memoryUsage > 60 ? .orange : .green
+                    )
+                    
+                    // Disk Usage
+                    PerformanceGauge(
+                        title: "磁盘",
+                        value: health.diskUsage,
+                        unit: "%",
+                        color: health.diskUsage > 90 ? .red : health.diskUsage > 75 ? .orange : .green
+                    )
+                    
+                    // Network Latency
+                    HStack {
+                        Text("网络延迟")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(String(format: "%.1fms", health.networkLatency * 1000))
+                            .font(.caption.monospacedDigit())
+                            .foregroundColor(health.networkLatency > 0.1 ? .orange : .green)
+                    }
+                    
+                    // Uptime
+                    HStack {
+                        Text("运行时间")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(formatUptime(health.uptime))
+                            .font(.caption.monospacedDigit())
+                            .foregroundColor(.primary)
+                    }
+                } else {
+                    if isLoading {
+                        ProgressView("正在加载性能数据...")
+                            .frame(height: 100)
+                    } else {
+                        Text("无法获取性能数据")
+                            .foregroundColor(.secondary)
+                            .frame(height: 100)
+                    }
+                }
+            }
+            .padding()
+        }
+        .onAppear {
+            startAutoRefresh()
+        }
+        .onDisappear {
+            stopAutoRefresh()
+        }
+    }
+    
+    private func startAutoRefresh() {
+        loadPerformanceData()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
+            loadPerformanceData()
+        }
+    }
+    
+    private func stopAutoRefresh() {
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+    }
+    
+    private func loadPerformanceData() {
+        guard let communicator = coreManager.grpcCommunicator else { return }
+        
+        isLoading = true
+        Task {
+            do {
+                let health = try await communicator.getSystemHealth()
+                await MainActor.run {
+                    self.systemHealth = health
+                    self.isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.isLoading = false
+                    print("Failed to load performance data: \(error)")
+                }
+            }
+        }
+    }
+    
+    private func formatUptime(_ uptime: TimeInterval) -> String {
+        let days = Int(uptime) / 86400
+        let hours = (Int(uptime) % 86400) / 3600
+        let minutes = (Int(uptime) % 3600) / 60
+        
+        if days > 0 {
+            return "\(days)天\(hours)小时"
+        } else if hours > 0 {
+            return "\(hours)小时\(minutes)分钟"
+        } else {
+            return "\(minutes)分钟"
+        }
+    }
+}
+
+struct PerformanceGauge: View {
+    let title: String
+    let value: Double
+    let unit: String
+    let color: Color
+    
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                Text(String(format: "%.1f%@", value, unit))
+                    .font(.title3.monospacedDigit())
+                    .foregroundColor(color)
+            }
+            
+            Spacer()
+            
+            Gauge(value: value, in: 0...100) {
+                Text(title)
+            }
+            .gaugeStyle(.accessoryCircular)
+            .tint(color)
+            .frame(width: 40, height: 40)
+        }
     }
 }
 

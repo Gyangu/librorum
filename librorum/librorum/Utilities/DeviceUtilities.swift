@@ -101,11 +101,46 @@ class DeviceUtilities {
         #if os(iOS)
         return UIDevice.current.model
         #elseif os(macOS)
-        return "Mac"
+        return getDetailedMacModel()
+        #elseif os(watchOS)
+        return "Apple Watch"
+        #elseif os(tvOS)
+        return "Apple TV"
+        #elseif os(visionOS)
+        return "Apple Vision Pro"
         #else
         return "Unknown"
         #endif
     }
+    
+    #if os(macOS)
+    private static func getDetailedMacModel() -> String {
+        var size = 0
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        var model = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.model", &model, &size, nil, 0)
+        let modelString = String(cString: model)
+        
+        // Map common model identifiers to user-friendly names
+        let modelMappings: [String: String] = [
+            "MacBookPro": "MacBook Pro",
+            "MacBookAir": "MacBook Air",
+            "iMac": "iMac",
+            "iMacPro": "iMac Pro",
+            "Macmini": "Mac mini",
+            "MacPro": "Mac Pro",
+            "MacStudio": "Mac Studio"
+        ]
+        
+        for (key, value) in modelMappings {
+            if modelString.contains(key) {
+                return value
+            }
+        }
+        
+        return modelString.isEmpty ? "Mac" : modelString
+    }
+    #endif
     
     static var deviceIdentifier: String {
         #if os(iOS)

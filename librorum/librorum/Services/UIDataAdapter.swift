@@ -19,9 +19,11 @@ class UIDataAdapter: ObservableObject {
     @Published var isConnected: Bool = false
     @Published var connectionStatus: String = "Disconnected"
     @Published var lastError: String?
+    @Published var uploadProgress: Double = 0.0
+    @Published var isUploading: Bool = false
     
-    init(communicator: GRPCCommunicatorProtocol = GRPCCommunicator()) {
-        self.communicator = communicator
+    init(communicator: GRPCCommunicatorProtocol? = nil) {
+        self.communicator = communicator ?? GRPCCommunicatorFactory.createCommunicator()
     }
     
     // MARK: - Connection Management
@@ -129,6 +131,8 @@ class UIDataAdapter: ObservableObject {
             return .connecting
         case .error:
             return .error
+        case .unknown:
+            return .offline
         }
     }
     
@@ -150,6 +154,58 @@ class UIDataAdapter: ObservableObject {
             self.lastError = error.localizedDescription
             self.isConnected = false
             self.connectionStatus = "Error: \(error.localizedDescription)"
+        }
+    }
+    
+    // MARK: - File Operations
+    
+    func uploadFile(fileUrl: URL, toPath destinationPath: String) async throws {
+        guard let fileData = try? Data(contentsOf: fileUrl) else {
+            throw NSError(domain: "UIDataAdapter", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not read file data"])
+        }
+        
+        await MainActor.run {
+            self.isUploading = true
+            self.uploadProgress = 0.0
+        }
+        
+        let metadata = FileUploadMetadata(
+            filename: fileUrl.lastPathComponent,
+            path: destinationPath,
+            fileType: fileUrl.hasDirectoryPath ? .directory : .file,
+            size: Int64(fileData.count),
+            permissions: "644",
+            overwrite: false,
+            createDirectories: true,
+            isEncrypted: false,
+            encryptionAlgorithm: nil,
+            keyId: nil
+        )
+        
+        do {
+            let result = try await communicator.uploadFileWithProgress(
+                metadata: metadata,
+                data: fileData
+            ) { [weak self] progress in
+                Task { @MainActor in
+                    self?.uploadProgress = progress.percentage
+                }
+            }
+            
+            await MainActor.run {
+                self.isUploading = false
+                self.uploadProgress = 0.0
+            }
+            
+            if !result.success {
+                throw NSError(domain: "UIDataAdapter", code: -2, userInfo: [NSLocalizedDescriptionKey: result.message])
+            }
+        } catch {
+            await MainActor.run {
+                self.isUploading = false
+                self.uploadProgress = 0.0
+            }
+            throw error
         }
     }
 }

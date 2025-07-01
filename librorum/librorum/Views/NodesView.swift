@@ -263,30 +263,34 @@ struct StatisticsSection: View {
                 GridItem(.flexible())
             ], spacing: 16) {
                 StatCard(
+                    icon: "link",
                     title: "连接次数",
                     value: "\(node.connectionCount)",
-                    systemImage: "link",
+                    subtitle: "次",
                     color: .blue
                 )
                 
                 StatCard(
+                    icon: "exclamationmark.triangle",
                     title: "失败次数",
                     value: "\(node.failureCount)",
-                    systemImage: "exclamationmark.triangle",
+                    subtitle: "次",
                     color: node.failureCount > 0 ? .red : .gray
                 )
                 
                 StatCard(
+                    icon: "wifi",
                     title: "网络延迟",
                     value: "\(String(format: "%.0fms", node.latency * 1000))",
-                    systemImage: "wifi",
+                    subtitle: "ms",
                     color: latencyColor(node.latency)
                 )
                 
                 StatCard(
+                    icon: node.isOnline ? "checkmark.circle" : "xmark.circle",
                     title: "在线状态",
                     value: node.isOnline ? "在线" : "离线",
-                    systemImage: node.isOnline ? "checkmark.circle" : "xmark.circle",
+                    subtitle: "",
                     color: node.isOnline ? .green : .red
                 )
             }
@@ -420,33 +424,6 @@ struct InfoRow: View {
     }
 }
 
-struct StatCard: View {
-    let title: String
-    let value: String
-    let systemImage: String
-    let color: Color
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: systemImage)
-                    .foregroundColor(color)
-                Spacer()
-            }
-            
-            Text(value)
-                .font(.title3)
-                .fontWeight(.semibold)
-            
-            Text(title)
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-        .padding()
-        .background(Color.secondary.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
 
 #Preview {
     NodesView(coreManager: CoreManager())

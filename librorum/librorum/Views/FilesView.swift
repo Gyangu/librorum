@@ -8,6 +8,10 @@
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
+import CryptoKit
+#if os(macOS)
+import AppKit
+#endif
 
 struct FilesView: View {
     @Environment(\.modelContext) private var modelContext
@@ -19,11 +23,42 @@ struct FilesView: View {
     @State private var showingFilePicker = false
     @State private var isUploading = false
     @State private var uploadProgress: Double = 0
+    @State private var remoteFiles: [FileItemData] = []
+    @State private var isLoading = false
+    @State private var errorMessage: String?
     
     var currentDirectoryFiles: [FileItem] {
-        files.filter { file in
+        // Convert remote files to FileItem for display
+        let convertedFiles = remoteFiles
+            .filter { file in
+                let filePath = file.path.contains("/") ? String(file.path.dropLast(file.name.count + 1)) : "/"
+                return filePath == currentPath
+            }
+            .map { remoteFile in
+                let parentPath = remoteFile.path.contains("/") ? String(remoteFile.path.dropLast(remoteFile.name.count + 1)) : "/"
+                return FileItem(
+                    path: remoteFile.path,
+                    name: remoteFile.name,
+                    size: remoteFile.size,
+                    modificationDate: remoteFile.lastModified,
+                    isDirectory: remoteFile.isDirectory,
+                    chunkIds: [],
+                    permissions: remoteFile.permissions,
+                    checksum: "",
+                    parentPath: parentPath == "/" ? nil : parentPath,
+                    version: 1,
+                    isEncrypted: false,
+                    encryptionAlgorithm: nil,
+                    keyId: nil
+                )
+            }
+        
+        // Also include local files that haven't been synced
+        let localFiles = files.filter { file in
             file.parentPath == currentPath || (currentPath == "/" && file.parentPath == nil)
         }
+        
+        return convertedFiles + localFiles
     }
     
     var body: some View {
@@ -45,7 +80,8 @@ struct FilesView: View {
                     Task {
                         await deleteFile(file)
                     }
-                }
+                },
+                coreManager: coreManager
             )
         } detail: {
             if let selectedFile = selectedFile {
@@ -66,17 +102,77 @@ struct FilesView: View {
                 UploadProgressView(progress: uploadProgress)
             }
         }
+        .alert("错误", isPresented: .constant(errorMessage != nil)) {
+            Button("确定") {
+                errorMessage = nil
+            }
+        } message: {
+            if let errorMessage = errorMessage {
+                Text(errorMessage)
+            }
+        }
+        .onAppear {
+            Task {
+                await refreshFiles()
+            }
+        }
     }
     
     private func refreshFiles() async {
-        // TODO: Implement file refresh from backend
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+        
+        do {
+            guard let communicator = coreManager.grpcCommunicator else {
+                errorMessage = "未连接到后端服务"
+                return
+            }
+            
+            let result = try await communicator.listFiles(
+                path: currentPath,
+                recursive: false,
+                includeHidden: false
+            )
+            
+            remoteFiles = result.files
+        } catch {
+            errorMessage = "刷新文件列表失败: \(error.localizedDescription)"
+            print("Failed to refresh files: \(error)")
+        }
     }
     
     private func deleteFile(_ file: FileItem) async {
-        modelContext.delete(file)
-        try? modelContext.save()
-        // TODO: Implement backend file deletion
+        do {
+            guard let communicator = coreManager.grpcCommunicator else {
+                errorMessage = "未连接到后端服务"
+                return
+            }
+            
+            let result = try await communicator.deleteFile(
+                fileId: nil,
+                path: file.path,
+                recursive: file.isDirectory,
+                force: false
+            )
+            
+            if result.success {
+                // Remove from local storage if it exists
+                if let localFile = files.first(where: { $0.path == file.path }) {
+                    modelContext.delete(localFile)
+                    try? modelContext.save()
+                }
+                
+                // Remove from remote files list
+                remoteFiles.removeAll { $0.path == file.path }
+                
+                await refreshFiles()
+            } else {
+                errorMessage = "删除失败: \(result.message)"
+            }
+        } catch {
+            errorMessage = "删除文件失败: \(error.localizedDescription)"
+        }
     }
     
     private func handleFileImport(_ result: Result<[URL], Error>) {
@@ -108,28 +204,78 @@ struct FilesView: View {
         defer { url.stopAccessingSecurityScopedResource() }
         
         do {
+            guard let communicator = coreManager.grpcCommunicator else {
+                errorMessage = "未连接到后端服务"
+                return
+            }
+            
             let data = try Data(contentsOf: url)
             let fileName = url.lastPathComponent
             let filePath = currentPath + (currentPath.hasSuffix("/") ? "" : "/") + fileName
             
-            let fileItem = FileItem(
+            // Create upload metadata
+            let metadata = FileUploadMetadata(
+                filename: fileName,
                 path: filePath,
-                name: fileName,
+                fileType: url.hasDirectoryPath ? .directory : .file,
                 size: Int64(data.count),
-                modificationDate: Date(),
-                isDirectory: false,
-                parentPath: currentPath
+                permissions: "644",
+                overwrite: true,
+                createDirectories: true,
+                isEncrypted: UserDefaults.standard.bool(forKey: "auto_encrypt_files"),
+                encryptionAlgorithm: UserDefaults.standard.bool(forKey: "auto_encrypt_files") ? EncryptionAlgorithm.aes256gcm.rawValue : nil,
+                keyId: nil
             )
             
-            modelContext.insert(fileItem)
-            try? modelContext.save()
+            // Upload to backend with progress
+            let result = try await communicator.uploadFileWithProgress(
+                metadata: metadata,
+                data: data
+            ) { progress in
+                Task { @MainActor in
+                    self.uploadProgress = progress.percentage
+                }
+            }
             
-            // TODO: Implement actual file upload to backend
-            try await Task.sleep(nanoseconds: 500_000_000)
-            
+            if result.success {
+                // Create local FileItem for immediate display
+                let fileItem = FileItem(
+                    path: filePath,
+                    name: fileName,
+                    size: Int64(data.count),
+                    modificationDate: Date(),
+                    isDirectory: false,
+                    parentPath: currentPath
+                )
+                
+                modelContext.insert(fileItem)
+                try? modelContext.save()
+                
+                print("✅ File uploaded successfully: \(fileName) (\(result.bytesUploaded) bytes)")
+            } else {
+                errorMessage = "上传失败: \(result.message)"
+            }
         } catch {
+            errorMessage = "上传文件失败: \(error.localizedDescription)"
             print("Failed to upload file: \(error)")
         }
+    }
+    
+    private func getMimeType(for url: URL) -> String {
+        let ext = url.pathExtension.lowercased()
+        switch ext {
+        case "txt": return "text/plain"
+        case "json": return "application/json"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "png": return "image/png"
+        case "pdf": return "application/pdf"
+        case "zip": return "application/zip"
+        default: return "application/octet-stream"
+        }
+    }
+    
+    private func calculateChecksum(_ data: Data) -> String {
+        return data.sha256
     }
 }
 
@@ -141,6 +287,11 @@ struct FileListView: View {
     let onRefresh: () async -> Void
     let onUpload: () -> Void
     let onDelete: (FileItem) -> Void
+    let coreManager: CoreManager
+    
+    @State private var showingCreateFolder = false
+    @State private var newFolderName = ""
+    @State private var isCreatingFolder = false
     
     var body: some View {
         VStack(spacing: 0) {
@@ -159,7 +310,9 @@ struct FileListView: View {
                 .contextMenu {
                     if !file.isDirectory {
                         Button("下载") {
-                            // TODO: Implement download
+                            Task {
+                                await downloadFile(file)
+                            }
                         }
                     }
                     
@@ -182,11 +335,13 @@ struct FileListView: View {
                 
                 Menu {
                     Button("新建文件夹") {
-                        // TODO: Implement create folder
+                        showingCreateFolder = true
                     }
                     
                     Button("同步状态") {
-                        // TODO: Show sync status
+                        Task {
+                            await showSyncStatus()
+                        }
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -195,6 +350,81 @@ struct FileListView: View {
         }
         .refreshable {
             await onRefresh()
+        }
+        .sheet(isPresented: $showingCreateFolder) {
+            CreateFolderSheet(
+                currentPath: currentPath,
+                newFolderName: $newFolderName,
+                isCreating: $isCreatingFolder,
+                coreManager: coreManager,
+                onCreated: {
+                    Task { await onRefresh() }
+                }
+            )
+        }
+    }
+    
+    private func downloadFile(_ file: FileItem) async {
+        do {
+            guard let communicator = coreManager.grpcCommunicator else {
+                print("未连接到后端服务")
+                return
+            }
+            
+            let downloadStream = try await communicator.downloadFile(fileId: nil, path: file.path)
+            var downloadedData = Data()
+            print("开始下载: \(file.name)")
+            
+            for try await chunk in downloadStream {
+                downloadedData.append(chunk.data)
+                print("下载块 \(chunk.chunkIndex + 1)/\(chunk.totalChunks)")
+            }
+            
+            // Save file dialog
+            #if os(macOS)
+            await saveDownloadedFile(downloadedData, fileName: file.name)
+            #endif
+            
+            print("✅ File downloaded successfully: \(file.name) (\(downloadedData.count) bytes)")
+        } catch {
+            print("下载文件失败: \(error)")
+        }
+    }
+    
+    @MainActor
+    private func saveDownloadedFile(_ data: Data, fileName: String) async {
+        #if os(macOS)
+        let savePanel = NSSavePanel()
+        savePanel.nameFieldStringValue = fileName
+        savePanel.allowedContentTypes = [.data]
+        
+        if savePanel.runModal() == .OK, let url = savePanel.url {
+            do {
+                try data.write(to: url)
+                print("✅ File saved to: \(url.path)")
+            } catch {
+                print("保存文件失败: \(error)")
+            }
+        }
+        #endif
+    }
+    
+    private func showSyncStatus() async {
+        do {
+            guard let communicator = coreManager.grpcCommunicator else {
+                print("未连接到后端服务")
+                return
+            }
+            
+            let result = try await communicator.getSyncStatus(path: currentPath)
+            print("🔄 Sync Status for \(currentPath):")
+            print("  Last Sync: \(result.lastSync)")
+            print("  Is Synced: \(result.isSynced)")
+            print("  Pending Uploads: \(result.pendingUploads)")
+            print("  Pending Downloads: \(result.pendingDownloads)")
+            print("  Conflicts: \(result.conflicts.count)")
+        } catch {
+            print("获取同步状态失败: \(error)")
         }
     }
 }
@@ -271,15 +501,44 @@ struct FileRowView: View {
                 
                 Spacer()
                 
-                if !file.isDirectory && file.chunkIds.count > 1 {
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("\(file.chunkIds.count) 块")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
+                HStack(spacing: 8) {
+                    // Encryption indicator
+                    if file.isEncrypted {
+                        VStack(alignment: .center, spacing: 2) {
+                            Image(systemName: "lock.shield.fill")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                            
+                            if let algorithm = file.encryptionAlgorithm {
+                                Text(algorithm.displayName)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    
+                    // Access level indicator
+                    VStack(alignment: .center, spacing: 2) {
+                        Image(systemName: file.accessLevel.systemImage)
+                            .font(.caption)
+                            .foregroundColor(Color(file.accessLevel.color))
                         
-                        Text("\(file.replicationFactor)x 副本")
+                        Text(file.accessLevel.displayName)
                             .font(.caption2)
                             .foregroundColor(.secondary)
+                    }
+                    
+                    // Storage info
+                    if !file.isDirectory && file.chunkIds.count > 1 {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("\(file.chunkIds.count) 块")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            
+                            Text("\(file.replicationFactor)x 副本")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
             }
@@ -350,14 +609,52 @@ struct FileDetailView: View {
         isDownloading = true
         downloadProgress = 0
         
-        // Simulate download progress
-        for i in 1...10 {
-            try? await Task.sleep(nanoseconds: 200_000_000) // 0.2 seconds
-            downloadProgress = Double(i) / 10.0
+        do {
+            guard let communicator = coreManager.grpcCommunicator else {
+                print("未连接到后端服务")
+                isDownloading = false
+                return
+            }
+            
+            let downloadStream = try await communicator.downloadFile(fileId: nil, path: file.path)
+            var downloadedData = Data()
+            print("开始下载: \(file.name)")
+            
+            for try await chunk in downloadStream {
+                downloadedData.append(chunk.data)
+                downloadProgress = Double(chunk.chunkIndex + 1) / Double(chunk.totalChunks)
+                print("下载块 \(chunk.chunkIndex + 1)/\(chunk.totalChunks)")
+            }
+            
+            // Save file dialog
+            #if os(macOS)
+            await saveDownloadedFile(downloadedData, fileName: file.name)
+            #endif
+            
+            print("✅ File downloaded successfully: \(file.name) (\(downloadedData.count) bytes)")
+        } catch {
+            print("下载文件失败: \(error)")
         }
         
         isDownloading = false
-        // TODO: Implement actual file download
+    }
+    
+    @MainActor
+    private func saveDownloadedFile(_ data: Data, fileName: String) async {
+        #if os(macOS)
+        let savePanel = NSSavePanel()
+        savePanel.nameFieldStringValue = fileName
+        savePanel.allowedContentTypes = [.data]
+        
+        if savePanel.runModal() == .OK, let url = savePanel.url {
+            do {
+                try data.write(to: url)
+                print("✅ File saved to: \(url.path)")
+            } catch {
+                print("保存文件失败: \(error)")
+            }
+        }
+        #endif
     }
 }
 
@@ -547,6 +844,108 @@ struct UploadProgressView: View {
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .padding()
+    }
+}
+
+struct CreateFolderSheet: View {
+    let currentPath: String
+    @Binding var newFolderName: String
+    @Binding var isCreating: Bool
+    let coreManager: CoreManager
+    let onCreated: () -> Void
+    
+    @Environment(\.dismiss) private var dismiss
+    @State private var errorMessage: String?
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 24) {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("文件夹名称")
+                        .font(.headline)
+                    
+                    TextField("输入文件夹名称", text: $newFolderName)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                }
+                
+                if let errorMessage = errorMessage {
+                    Text("创建失败: \(errorMessage)")
+                        .foregroundColor(.red)
+                        .font(.caption)
+                }
+                
+                Button(action: {
+                    Task { await createFolder() }
+                }) {
+                    HStack {
+                        if isCreating {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        }
+                        
+                        Text(isCreating ? "创建中..." : "创建文件夹")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.blue)
+                    .foregroundColor(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .disabled(isCreating || newFolderName.isEmpty)
+                
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("新建文件夹")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+    
+    private func createFolder() async {
+        isCreating = true
+        errorMessage = nil
+        defer { isCreating = false }
+        
+        do {
+            guard let communicator = coreManager.grpcCommunicator else {
+                errorMessage = "未连接到后端服务"
+                return
+            }
+            
+            let folderPath = currentPath + (currentPath.hasSuffix("/") ? "" : "/") + newFolderName
+            
+            let result = try await communicator.createDirectory(
+                path: folderPath,
+                createParents: true
+            )
+            
+            if result.success {
+                onCreated()
+                dismiss()
+            } else {
+                errorMessage = result.message
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+// MARK: - Extensions
+
+extension Data {
+    var sha256: String {
+        let digest = SHA256.hash(data: self)
+        return digest.compactMap { String(format: "%02x", $0) }.joined()
     }
 }
 

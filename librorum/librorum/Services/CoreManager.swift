@@ -21,11 +21,16 @@ class CoreManager {
     var isInitialized: Bool = false
     
     // MARK: - Private Properties
+    #if os(macOS)
     private var backendProcess: Process?
+    #endif
     private var healthTimer: Timer?
     private var nodeDiscoveryTimer: Timer?
     private var grpcClient: LibrorumClient?
     private let configFileName = "librorum.toml"
+    
+    // MARK: - Public Properties for UI
+    var grpcCommunicator: GRPCCommunicatorProtocol?
     
     // MARK: - Initialization
     init() {
@@ -43,11 +48,15 @@ class CoreManager {
             return 
         }
         
+        #if os(macOS)
         print("🔧 CoreManager: Setting up backend binary...")
         try await setupBackendBinary()
         
         print("🔧 CoreManager: Creating default configuration...")
         try await createDefaultConfiguration()
+        #else
+        print("📱 CoreManager: iOS mode - skipping backend setup, will scan for existing cores")
+        #endif
         
         isInitialized = true
         print("✅ CoreManager: Initialization completed")
@@ -70,6 +79,7 @@ class CoreManager {
         backendStatus = .starting
         lastError = nil
         
+        #if os(macOS)
         do {
             print("🚀 CoreManager: Launching backend process...")
             try await launchBackendProcess()
@@ -94,6 +104,27 @@ class CoreManager {
             lastError = error.localizedDescription
             throw error
         }
+        #else
+        // iOS: Scan for existing cores on local network
+        do {
+            print("📱 CoreManager: iOS mode - scanning for existing cores...")
+            try await scanAndConnectToExistingCore()
+            
+            print("📱 CoreManager: Setting status to running...")
+            backendStatus = .running
+            
+            print("📱 CoreManager: Starting monitoring...")
+            startMonitoring()
+            
+            print("✅ CoreManager: Connected to existing core successfully!")
+            
+        } catch {
+            print("❌ CoreManager: Failed to connect to existing core - \(error)")
+            backendStatus = .error
+            lastError = error.localizedDescription
+            throw error
+        }
+        #endif
     }
     
     func stopBackend() async throws {
@@ -102,6 +133,7 @@ class CoreManager {
         backendStatus = .stopping
         stopMonitoring()
         
+        #if os(macOS)
         do {
             try await sendStopCommand()
             await terminateBackendProcess()
@@ -112,6 +144,17 @@ class CoreManager {
             lastError = error.localizedDescription
             throw error
         }
+        #else
+        // iOS: Just disconnect from the remote core
+        do {
+            await disconnectFromCore()
+            backendStatus = .stopped
+        } catch {
+            backendStatus = .error
+            lastError = error.localizedDescription
+            throw error
+        }
+        #endif
     }
     
     func restartBackend() async throws {
@@ -186,6 +229,116 @@ class CoreManager {
         await refreshNodes()
     }
     
+    // MARK: - iOS Network Discovery
+    
+    #if os(iOS)
+    private func scanAndConnectToExistingCore() async throws {
+        print("📱 CoreManager: Starting network discovery for existing cores...")
+        
+        // Common ports that librorum cores might use
+        let commonPorts = [50051, 50052, 50053, 50054, 50055]
+        
+        // Try to discover cores using mDNS first
+        if let discoveredCore = try? await discoverCoreViaMDNS() {
+            print("📱 CoreManager: Found core via mDNS: \(discoveredCore)")
+            try await connectToCore(discoveredCore)
+            return
+        }
+        
+        // Fallback: scan local network IP ranges
+        let localIPs = getLocalNetworkIPs()
+        
+        for baseIP in localIPs {
+            for port in commonPorts {
+                let address = "\(baseIP):\(port)"
+                
+                do {
+                    print("📱 CoreManager: Trying to connect to: \(address)")
+                    let client = LibrorumClient()
+                    try await client.connect(to: address)
+                    
+                    if await client.isHealthy() {
+                        print("✅ CoreManager: Found healthy core at: \(address)")
+                        try await connectToCore(address)
+                        return
+                    }
+                    
+                } catch {
+                    // Continue trying other addresses
+                    continue
+                }
+            }
+        }
+        
+        throw CoreManagerError.noAvailableCores
+    }
+    
+    private func discoverCoreViaMDNS() async throws -> String {
+        // This is a simplified mDNS discovery - in a real implementation,
+        // you'd use Network framework's NWBrowser for mDNS discovery
+        print("📱 CoreManager: Attempting mDNS discovery...")
+        
+        // For now, we'll just try localhost as a fallback
+        // TODO: Implement proper mDNS discovery using NWBrowser
+        let client = LibrorumClient()
+        try await client.connect(to: "localhost:50051")
+        
+        if await client.isHealthy() {
+            return "localhost:50051"
+        }
+        
+        throw CoreManagerError.noAvailableCores
+    }
+    
+    private func getLocalNetworkIPs() -> [String] {
+        // Get the current device's IP to determine the local network range
+        var localIPs: [String] = []
+        
+        // Common local network ranges
+        let networkBases = [
+            "192.168.1",
+            "192.168.0", 
+            "10.0.0",
+            "172.16.0"
+        ]
+        
+        for base in networkBases {
+            // Scan a small range of IPs (1-10) to avoid being too aggressive
+            for i in 1...10 {
+                localIPs.append("\(base).\(i)")
+            }
+        }
+        
+        return localIPs
+    }
+    
+    private func connectToCore(_ address: String) async throws {
+        print("📱 CoreManager: Connecting to core at: \(address)")
+        
+        grpcClient = LibrorumClient()
+        try await grpcClient?.connect(to: address)
+        
+        // Initialize the pure gRPC communicator for direct use
+        grpcCommunicator = GRPCCommunicatorFactory.createCommunicator()
+        try await grpcCommunicator?.connect(address: address)
+        
+        print("✅ CoreManager: Successfully connected to core at: \(address)")
+    }
+    
+    private func disconnectFromCore() async {
+        print("📱 CoreManager: Disconnecting from remote core...")
+        
+        // Disconnect and cleanup grpcCommunicator
+        if let communicator = grpcCommunicator {
+            try? await communicator.disconnect()
+        }
+        grpcCommunicator = nil
+        grpcClient = nil
+        
+        print("✅ CoreManager: Disconnected from remote core")
+    }
+    #endif
+    
     // MARK: - Private Implementation
     
     private func setupBackendBinary() async throws {
@@ -197,12 +350,17 @@ class CoreManager {
             throw CoreManagerError.backendBinaryNotFound(backendPath)
         }
         
-        print("✅ CoreManager: Backend binary found, setting permissions...")
-        // Ensure binary is executable
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755],
-            ofItemAtPath: backendPath
-        )
+        print("✅ CoreManager: Backend binary found")
+        
+        // 检查文件是否可执行
+        let fileManager = FileManager.default
+        if fileManager.isExecutableFile(atPath: backendPath) {
+            print("✅ CoreManager: Backend binary is already executable")
+        } else {
+            print("⚠️ CoreManager: Backend binary is not executable, but this is expected in app bundle")
+            // 在app bundle中，文件权限由系统管理，我们不需要手动设置
+        }
+        
         print("✅ CoreManager: Backend binary setup completed")
     }
     
@@ -235,6 +393,7 @@ class CoreManager {
         try defaultConfig.write(toFile: configPath, atomically: true, encoding: .utf8)
     }
     
+    #if os(macOS)
     private func launchBackendProcess() async throws {
         let backendPath = getBackendBinaryPath()
         let configPath = getConfigFilePath()
@@ -260,6 +419,7 @@ class CoreManager {
         try backendProcess?.run()
         print("✅ CoreManager: Process started successfully")
     }
+    #endif
     
     private func waitForBackendReady() async throws {
         // Wait for backend to be ready (up to 10 seconds)
@@ -295,9 +455,15 @@ class CoreManager {
         print("🔗 CoreManager: Establishing real gRPC connection...")
         grpcClient = LibrorumClient()
         try await grpcClient?.connect(to: "localhost:50051")
+        
+        // Initialize the pure gRPC communicator for direct use
+        grpcCommunicator = GRPCCommunicatorFactory.createCommunicator()
+        try await grpcCommunicator?.connect(address: "localhost:50051")
+        
         print("✅ CoreManager: gRPC connection established")
     }
     
+    #if os(macOS)
     private func sendStopCommand() async throws {
         let backendPath = getBackendBinaryPath()
         let configPath = getConfigFilePath()
@@ -309,12 +475,21 @@ class CoreManager {
         try stopProcess.run()
         stopProcess.waitUntilExit()
     }
+    #endif
     
     private func terminateBackendProcess() async {
+        #if os(macOS)
         backendProcess?.terminate()
         backendProcess?.waitUntilExit()
         backendProcess = nil
+        #endif
         grpcClient = nil
+        
+        // Disconnect and cleanup grpcCommunicator
+        if let communicator = grpcCommunicator {
+            try? await communicator.disconnect()
+        }
+        grpcCommunicator = nil
     }
     
     private func startMonitoring() {
@@ -438,6 +613,7 @@ enum CoreManagerError: LocalizedError {
     case backendStartupTimeout
     case grpcNotConnected
     case configurationError(String)
+    case noAvailableCores
     
     var errorDescription: String? {
         switch self {
@@ -449,6 +625,8 @@ enum CoreManagerError: LocalizedError {
             return "gRPC client is not connected"
         case .configurationError(let message):
             return "Configuration error: \(message)"
+        case .noAvailableCores:
+            return "No available cores found on the local network"
         }
     }
 }

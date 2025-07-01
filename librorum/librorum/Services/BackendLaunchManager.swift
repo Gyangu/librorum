@@ -127,6 +127,8 @@ class BackendLaunchManager {
     // MARK: - Auto Start Flow
     
     private func handleAutoStartFailure(_ error: Error) async {
+        print("❌ BackendLaunchManager: Auto start failed with error: \(error)")
+        
         await withAnimation(.easeInOut) {
             statusMessage = "自动启动失败：\(error.localizedDescription)"
             launchProgress = 0.0
@@ -134,8 +136,10 @@ class BackendLaunchManager {
         
         // 根据错误类型决定下一步
         if isRetryableError(error) {
+            print("🔄 BackendLaunchManager: Error is retryable, showing retry prompt")
             await showRetryPrompt()
         } else {
+            print("🔧 BackendLaunchManager: Error is not retryable, switching to manual control")
             await transitionToManualControl()
         }
     }
@@ -240,8 +244,11 @@ class BackendLaunchManager {
     // MARK: - Helper Methods
     
     private func getLaunchStrategy() -> LaunchStrategy {
+        print("🔧 BackendLaunchManager: Determining launch strategy...")
+        
         // 从用户偏好读取策略
         if let prefs = userPreferences {
+            print("🔧 BackendLaunchManager: User preferences found - strategy: \(prefs.startupStrategy)")
             switch prefs.startupStrategy {
             case "automatic":
                 return .automatic
@@ -256,9 +263,11 @@ class BackendLaunchManager {
             }
         }
         
-        // 首次启动时询问用户
-        if isFirstLaunch() {
-            return .prompt
+        // 首次启动时使用自动启动（而不是询问用户）
+        let isFirst = isFirstLaunch()
+        print("🔧 BackendLaunchManager: Is first launch: \(isFirst)")
+        if isFirst {
+            return .automatic  // 改为自动启动
         }
         
         return .automatic // 默认自动启动
