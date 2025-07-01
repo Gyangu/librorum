@@ -1,3 +1,4 @@
+pub mod file_service;
 pub mod mdns_manager;
 pub mod network_config;
 pub mod node_client;
@@ -5,6 +6,7 @@ pub mod node_health;
 pub mod node_manager;
 pub mod node_service;
 
+pub use file_service::FileServiceImpl;
 pub use network_config::NetworkConfig;
 pub use node_client::NodeClient;
 pub use node_health::{HealthMonitor, NodeHealth, NodeStatus};

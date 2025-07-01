@@ -13,9 +13,9 @@
 
 ## 📊 TODO 统计
 - **总计**: 63个
-- **待处理**: 52个
+- **待处理**: 45个
 - **进行中**: 0个
-- **已完成**: 11个
+- **已完成**: 18个
 
 ---
 
@@ -42,13 +42,13 @@
 - [x] ✅ Line 106: 实现实际的 gRPC 调用 (heartbeat) (2025-07-01)
 
 ### FilesView.swift
-- [ ] ⏳ Line 72: 实现从后端刷新文件
-- [ ] ⏳ Line 79: 实现后端文件删除
-- [ ] ⏳ Line 127: 实现实际的文件上传到后端
-- [ ] ⏳ Line 162: 实现下载功能
-- [ ] ⏳ Line 185: 实现创建文件夹
-- [ ] ⏳ Line 189: 显示同步状态
-- [ ] ⏳ Line 360: 实现实际的文件下载
+- [x] ✅ Line 72: 实现从后端刷新文件 (2025-07-01)
+- [x] ✅ Line 79: 实现后端文件删除 (2025-07-01)
+- [x] ✅ Line 127: 实现实际的文件上传到后端 (2025-07-01)
+- [x] ✅ Line 162: 实现下载功能 (2025-07-01)
+- [x] ✅ Line 185: 实现创建文件夹 (2025-07-01)
+- [x] ✅ Line 189: 显示同步状态 (2025-07-01)
+- [x] ✅ Line 360: 实现实际的文件下载 (2025-07-01)
 
 ### SettingsView.swift
 - [ ] ⏳ Line 338: 实现重置所有设置
@@ -173,6 +173,22 @@
   - ✅ removeNode - 移除节点
 - 所有方法都通过grpcurl测试验证
 - Swift客户端现在具备完整的分布式节点管理能力
+- 实现了完整的文件操作gRPC服务：
+  - ✅ file.proto - 定义了7个文件操作服务
+  - ✅ FileServiceImpl - Rust后端实现
+  - ✅ 集成到NodeManager gRPC服务器
+  - ✅ file.pb.swift 和 file.grpc.swift - Swift客户端代码
+  - ✅ GRPCCommunicator文件操作扩展
+  - ✅ 完整的数据结构映射
+- 文件服务包含以下功能：
+  - ✅ ListFiles - 列出目录文件
+  - ✅ UploadFile - 流式文件上传
+  - ✅ DownloadFile - 流式文件下载
+  - ✅ DeleteFile - 删除文件/目录
+  - ✅ CreateDirectory - 创建目录
+  - ✅ GetFileInfo - 获取文件信息
+  - ✅ GetSyncStatus - 获取同步状态
+- 通过grpcurl测试验证所有文件服务功能正常
 
 ---
 

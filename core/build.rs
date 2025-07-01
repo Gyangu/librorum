@@ -7,6 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 原来的proto编译逻辑
     println!("cargo:rerun-if-changed=src/proto");
     tonic_build::compile_protos("src/proto/node.proto")?;
+    tonic_build::compile_protos("src/proto/file.proto")?;
 
     // 获取当前目录的绝对路径
     let current_dir = env::current_dir().expect("无法获取当前目录");

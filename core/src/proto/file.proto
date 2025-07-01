@@ -1,0 +1,197 @@
+syntax = "proto3";
+package file;
+
+// 文件服务定义
+service FileService {
+  // 列出目录中的文件
+  rpc ListFiles (ListFilesRequest) returns (ListFilesResponse);
+  
+  // 上传文件（流式）
+  rpc UploadFile (stream UploadFileRequest) returns (UploadFileResponse);
+  
+  // 下载文件（流式）
+  rpc DownloadFile (DownloadFileRequest) returns (stream DownloadFileResponse);
+  
+  // 删除文件或目录
+  rpc DeleteFile (DeleteFileRequest) returns (DeleteFileResponse);
+  
+  // 创建目录
+  rpc CreateDirectory (CreateDirectoryRequest) returns (CreateDirectoryResponse);
+  
+  // 获取文件信息
+  rpc GetFileInfo (GetFileInfoRequest) returns (FileInfo);
+  
+  // 获取同步状态
+  rpc GetSyncStatus (GetSyncStatusRequest) returns (SyncStatusResponse);
+}
+
+// 列出文件请求
+message ListFilesRequest {
+  string path = 1;              // 目录路径，如: "/", "/documents"
+  bool recursive = 2;           // 是否递归列出子目录
+  bool include_hidden = 3;      // 是否包含隐藏文件
+}
+
+// 列出文件响应
+message ListFilesResponse {
+  repeated FileInfo files = 1;  // 文件列表
+  string current_path = 2;      // 当前路径
+  int32 total_count = 3;        // 总文件数
+  int64 total_size = 4;         // 总大小（字节）
+}
+
+// 文件信息
+message FileInfo {
+  string file_id = 1;           // 文件唯一ID
+  string name = 2;              // 文件名
+  string path = 3;              // 完整路径
+  string parent_path = 4;       // 父目录路径
+  int64 size = 5;               // 文件大小（字节）
+  int64 created_at = 6;         // 创建时间戳
+  int64 modified_at = 7;        // 修改时间戳
+  int64 accessed_at = 8;        // 访问时间戳
+  FileType file_type = 9;       // 文件类型
+  string mime_type = 10;        // MIME类型
+  string checksum = 11;         // 文件校验和
+  FilePermissions permissions = 12; // 文件权限
+  bool is_directory = 13;       // 是否为目录
+  bool is_symlink = 14;         // 是否为符号链接
+  int32 chunk_count = 15;       // 分块数量
+  repeated string chunk_ids = 16; // 分块ID列表
+  int32 replication_factor = 17;  // 副本因子
+  bool is_compressed = 18;      // 是否压缩
+  bool is_encrypted = 19;       // 是否加密
+  SyncStatus sync_status = 20;  // 同步状态
+}
+
+// 文件类型枚举
+enum FileType {
+  FILE_TYPE_UNKNOWN = 0;
+  FILE_TYPE_REGULAR = 1;        // 普通文件
+  FILE_TYPE_DIRECTORY = 2;      // 目录
+  FILE_TYPE_SYMLINK = 3;        // 符号链接
+  FILE_TYPE_BLOCK_DEVICE = 4;   // 块设备
+  FILE_TYPE_CHAR_DEVICE = 5;    // 字符设备
+  FILE_TYPE_FIFO = 6;           // 命名管道
+  FILE_TYPE_SOCKET = 7;         // 套接字
+}
+
+// 文件权限
+message FilePermissions {
+  int32 mode = 1;               // Unix权限模式（如：0755）
+  string owner = 2;             // 所有者
+  string group = 3;             // 组
+  bool readable = 4;            // 可读
+  bool writable = 5;            // 可写
+  bool executable = 6;          // 可执行
+}
+
+// 同步状态枚举
+enum SyncStatus {
+  SYNC_STATUS_UNKNOWN = 0;
+  SYNC_STATUS_SYNCED = 1;       // 已同步
+  SYNC_STATUS_PENDING = 2;      // 等待同步
+  SYNC_STATUS_SYNCING = 3;      // 同步中
+  SYNC_STATUS_ERROR = 4;        // 同步错误
+  SYNC_STATUS_CONFLICT = 5;     // 冲突
+}
+
+// 上传文件请求（流式）
+message UploadFileRequest {
+  oneof data {
+    UploadFileMetadata metadata = 1;  // 文件元数据（第一个消息）
+    bytes chunk = 2;                  // 文件数据块
+  }
+}
+
+// 上传文件元数据
+message UploadFileMetadata {
+  string name = 1;              // 文件名
+  string path = 2;              // 目标路径
+  int64 size = 3;               // 文件大小
+  string mime_type = 4;         // MIME类型
+  string checksum = 5;          // 文件校验和
+  bool overwrite = 6;           // 是否覆盖现有文件
+  bool compress = 7;            // 是否压缩
+  bool encrypt = 8;             // 是否加密
+}
+
+// 上传文件响应
+message UploadFileResponse {
+  bool success = 1;             // 是否成功
+  string message = 2;           // 响应消息
+  FileInfo file_info = 3;       // 文件信息（如果成功）
+  int64 bytes_uploaded = 4;     // 已上传字节数
+}
+
+// 下载文件请求
+message DownloadFileRequest {
+  string file_id = 1;           // 文件ID
+  string path = 2;              // 文件路径（可选，如果没有file_id）
+  int64 offset = 3;             // 下载偏移量（用于断点续传）
+  int64 length = 4;             // 下载长度（0表示全部）
+}
+
+// 下载文件响应（流式）
+message DownloadFileResponse {
+  oneof data {
+    FileInfo file_info = 1;     // 文件信息（第一个消息）
+    bytes chunk = 2;            // 文件数据块
+  }
+  int64 offset = 3;             // 当前偏移量
+  int64 total_size = 4;         // 总大小
+}
+
+// 删除文件请求
+message DeleteFileRequest {
+  string file_id = 1;           // 文件ID
+  string path = 2;              // 文件路径（可选）
+  bool recursive = 3;           // 是否递归删除（目录）
+  bool force = 4;               // 是否强制删除
+}
+
+// 删除文件响应
+message DeleteFileResponse {
+  bool success = 1;             // 是否成功
+  string message = 2;           // 响应消息
+  int32 deleted_count = 3;      // 删除的文件数量
+}
+
+// 创建目录请求
+message CreateDirectoryRequest {
+  string path = 1;              // 目录路径
+  bool create_parents = 2;      // 是否创建父目录
+  FilePermissions permissions = 3; // 目录权限
+}
+
+// 创建目录响应
+message CreateDirectoryResponse {
+  bool success = 1;             // 是否成功
+  string message = 2;           // 响应消息
+  FileInfo directory_info = 3;  // 目录信息（如果成功）
+}
+
+// 获取文件信息请求
+message GetFileInfoRequest {
+  string file_id = 1;           // 文件ID
+  string path = 2;              // 文件路径（可选）
+  bool include_chunks = 3;      // 是否包含分块信息
+}
+
+// 获取同步状态请求
+message GetSyncStatusRequest {
+  string path = 1;              // 路径（可选，空表示全局状态）
+}
+
+// 同步状态响应
+message SyncStatusResponse {
+  SyncStatus overall_status = 1;    // 总体状态
+  int32 pending_uploads = 2;        // 待上传文件数
+  int32 pending_downloads = 3;      // 待下载文件数
+  int32 syncing_files = 4;          // 同步中文件数
+  int32 error_files = 5;            // 错误文件数
+  int32 conflict_files = 6;         // 冲突文件数
+  int64 bytes_to_upload = 7;        // 待上传字节数
+  int64 bytes_to_download = 8;      // 待下载字节数
+  repeated FileInfo pending_files = 9; // 待处理文件列表
+} 

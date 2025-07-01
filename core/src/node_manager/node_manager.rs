@@ -1,4 +1,5 @@
 use crate::config::NodeConfig;
+use crate::proto::file::file_service_server::FileServiceServer;
 use crate::proto::node::node_service_server::NodeServiceServer;
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
@@ -10,6 +11,7 @@ use tokio::time::interval;
 use tonic::transport::Server;
 use tracing::{debug, info, warn};
 
+use crate::node_manager::file_service::FileServiceImpl;
 use crate::node_manager::mdns_manager::MdnsManager;
 use crate::node_manager::node_client::NodeClient;
 use crate::node_manager::node_health::{HealthMonitor, NodeHealth, NodeStatus};
@@ -236,10 +238,14 @@ impl NodeManager {
             .parse()
             .with_context(|| format!("解析地址失败: {}", self.bind_address))?;
 
+        // 创建文件服务
+        let file_service = FileServiceImpl::new();
+
         // 启动gRPC服务器
         info!("启动gRPC服务器: {}", addr);
         Server::builder()
             .add_service(NodeServiceServer::new(node_service))
+            .add_service(FileServiceServer::new(file_service))
             .serve(addr)
             .await
             .with_context(|| format!("gRPC服务器启动失败: {}", addr))?;

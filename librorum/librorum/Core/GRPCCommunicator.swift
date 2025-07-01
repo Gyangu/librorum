@@ -22,6 +22,15 @@ protocol GRPCCommunicatorProtocol {
     func getSystemHealth() async throws -> CommunicatorSystemHealthData
     func addNode(address: String) async throws
     func removeNode(nodeId: String) async throws
+    
+    // File operations
+    func listFiles(path: String, recursive: Bool, includeHidden: Bool) async throws -> FileListResult
+    func uploadFile(metadata: FileUploadMetadata, data: Data) async throws -> FileUploadResult
+    func downloadFile(fileId: String?, path: String?) async throws -> AsyncThrowingStream<FileDownloadChunk, Error>
+    func deleteFile(fileId: String?, path: String?, recursive: Bool, force: Bool) async throws -> FileDeleteResult
+    func createDirectory(path: String, createParents: Bool) async throws -> FileCreateDirectoryResult
+    func getFileInfo(fileId: String?, path: String?, includeChunks: Bool) async throws -> FileInfoData
+    func getSyncStatus(path: String?) async throws -> FileSyncStatusResult
 }
 
 /// Pure data structures - no SwiftData/SwiftUI dependencies
@@ -441,6 +450,307 @@ class GRPCCommunicator: GRPCCommunicatorProtocol {
             return .offline
         }
     }
+    
+    // MARK: - File Operations
+    
+    func listFiles(path: String, recursive: Bool, includeHidden: Bool) async throws -> FileListResult {
+        guard isConnectedState, let channel = channel else {
+            throw GRPCError.notConnected
+        }
+        
+        let fileClient = File_FileServiceAsyncClient(channel: channel)
+        let request = File_ListFilesRequest.with {
+            $0.path = path
+            $0.recursive = recursive
+            $0.includeHidden = includeHidden
+        }
+        
+        let response = try await fileClient.listFiles(request)
+        
+        let files = response.files.map { protoFile in
+            FileInfoData(
+                fileId: protoFile.fileID,
+                name: protoFile.name,
+                path: protoFile.path,
+                parentPath: protoFile.parentPath,
+                size: protoFile.size,
+                createdAt: Date(timeIntervalSince1970: TimeInterval(protoFile.createdAt)),
+                modifiedAt: Date(timeIntervalSince1970: TimeInterval(protoFile.modifiedAt)),
+                accessedAt: Date(timeIntervalSince1970: TimeInterval(protoFile.accessedAt)),
+                fileType: mapFileType(protoFile.fileType),
+                mimeType: protoFile.mimeType,
+                checksum: protoFile.checksum,
+                isDirectory: protoFile.isDirectory,
+                isSymlink: protoFile.isSymlink,
+                chunkCount: Int(protoFile.chunkCount),
+                chunkIds: protoFile.chunkIds,
+                replicationFactor: Int(protoFile.replicationFactor),
+                isCompressed: protoFile.isCompressed,
+                isEncrypted: protoFile.isEncrypted,
+                syncStatus: mapSyncStatus(protoFile.syncStatus)
+            )
+        }
+        
+        return FileListResult(
+            files: files,
+            currentPath: response.currentPath,
+            totalCount: Int(response.totalCount),
+            totalSize: response.totalSize
+        )
+    }
+    
+    func uploadFile(metadata: FileUploadMetadata, data: Data) async throws -> FileUploadResult {
+        guard isConnectedState, let channel = channel else {
+            throw GRPCError.notConnected
+        }
+        
+        let fileClient = File_FileServiceAsyncClient(channel: channel)
+        let uploadCall = fileClient.uploadFile()
+        
+        // Send metadata first
+        let metadataRequest = File_UploadFileRequest.with {
+            $0.metadata = File_UploadFileMetadata.with {
+                $0.name = metadata.name
+                $0.path = metadata.path
+                $0.size = Int64(data.count)
+                $0.mimeType = metadata.mimeType
+                $0.checksum = metadata.checksum
+                $0.overwrite = metadata.overwrite
+                $0.compress = metadata.compress
+                $0.encrypt = metadata.encrypt
+            }
+        }
+        
+        try await uploadCall.requestStream.send(metadataRequest)
+        
+        // Send data in chunks
+        let chunkSize = 8192 // 8KB chunks
+        var offset = 0
+        
+        while offset < data.count {
+            let remainingBytes = data.count - offset
+            let currentChunkSize = min(chunkSize, remainingBytes)
+            let chunkData = data.subdata(in: offset..<(offset + currentChunkSize))
+            
+            let chunkRequest = File_UploadFileRequest.with {
+                $0.chunk = chunkData
+            }
+            
+            try await uploadCall.requestStream.send(chunkRequest)
+            offset += currentChunkSize
+        }
+        
+        try await uploadCall.requestStream.finish()
+        let response = try await uploadCall.response
+        
+        return FileUploadResult(
+            success: response.success,
+            message: response.message,
+            bytesUploaded: response.bytesUploaded,
+            fileInfo: response.hasFileInfo ? mapFileInfo(response.fileInfo) : nil
+        )
+    }
+    
+    func downloadFile(fileId: String?, path: String?) async throws -> AsyncThrowingStream<FileDownloadChunk, Error> {
+        guard isConnectedState, let channel = channel else {
+            throw GRPCError.notConnected
+        }
+        
+        let fileClient = File_FileServiceAsyncClient(channel: channel)
+        let request = File_DownloadFileRequest.with {
+            if let fileId = fileId {
+                $0.fileID = fileId
+            }
+            if let path = path {
+                $0.path = path
+            }
+            $0.offset = 0
+            $0.length = 0 // Download entire file
+        }
+        
+        let downloadCall = fileClient.downloadFile(request)
+        
+        return AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    for try await response in downloadCall.responseStream {
+                        if response.hasFileInfo {
+                            let chunk = FileDownloadChunk.fileInfo(mapFileInfo(response.fileInfo))
+                            continuation.yield(chunk)
+                        } else if response.data != nil {
+                            let chunkData = response.chunk
+                            let chunk = FileDownloadChunk.data(chunkData, offset: response.offset, totalSize: response.totalSize)
+                            continuation.yield(chunk)
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+    
+    func deleteFile(fileId: String?, path: String?, recursive: Bool, force: Bool) async throws -> FileDeleteResult {
+        guard isConnectedState, let channel = channel else {
+            throw GRPCError.notConnected
+        }
+        
+        let fileClient = File_FileServiceAsyncClient(channel: channel)
+        let request = File_DeleteFileRequest.with {
+            if let fileId = fileId {
+                $0.fileID = fileId
+            }
+            if let path = path {
+                $0.path = path
+            }
+            $0.recursive = recursive
+            $0.force = force
+        }
+        
+        let response = try await fileClient.deleteFile(request)
+        
+        return FileDeleteResult(
+            success: response.success,
+            message: response.message,
+            deletedCount: Int(response.deletedCount)
+        )
+    }
+    
+    func createDirectory(path: String, createParents: Bool) async throws -> FileCreateDirectoryResult {
+        guard isConnectedState, let channel = channel else {
+            throw GRPCError.notConnected
+        }
+        
+        let fileClient = File_FileServiceAsyncClient(channel: channel)
+        let request = File_CreateDirectoryRequest.with {
+            $0.path = path
+            $0.createParents = createParents
+        }
+        
+        let response = try await fileClient.createDirectory(request)
+        
+        return FileCreateDirectoryResult(
+            success: response.success,
+            message: response.message,
+            directoryInfo: response.hasDirectoryInfo ? mapFileInfo(response.directoryInfo) : nil
+        )
+    }
+    
+    func getFileInfo(fileId: String?, path: String?, includeChunks: Bool) async throws -> FileInfoData {
+        guard isConnectedState, let channel = channel else {
+            throw GRPCError.notConnected
+        }
+        
+        let fileClient = File_FileServiceAsyncClient(channel: channel)
+        let request = File_GetFileInfoRequest.with {
+            if let fileId = fileId {
+                $0.fileID = fileId
+            }
+            if let path = path {
+                $0.path = path
+            }
+            $0.includeChunks = includeChunks
+        }
+        
+        let response = try await fileClient.getFileInfo(request)
+        return mapFileInfo(response)
+    }
+    
+    func getSyncStatus(path: String?) async throws -> FileSyncStatusResult {
+        guard isConnectedState, let channel = channel else {
+            throw GRPCError.notConnected
+        }
+        
+        let fileClient = File_FileServiceAsyncClient(channel: channel)
+        let request = File_GetSyncStatusRequest.with {
+            if let path = path {
+                $0.path = path
+            }
+        }
+        
+        let response = try await fileClient.getSyncStatus(request)
+        
+        return FileSyncStatusResult(
+            overallStatus: mapSyncStatus(response.overallStatus),
+            pendingUploads: Int(response.pendingUploads),
+            pendingDownloads: Int(response.pendingDownloads),
+            syncingFiles: Int(response.syncingFiles),
+            errorFiles: Int(response.errorFiles),
+            conflictFiles: Int(response.conflictFiles),
+            bytesToUpload: response.bytesToUpload,
+            bytesToDownload: response.bytesToDownload,
+            pendingFiles: response.pendingFiles.map { mapFileInfo($0) }
+        )
+    }
+    
+    // MARK: - File Helper Methods
+    
+    private func mapFileInfo(_ protoFile: File_FileInfo) -> FileInfoData {
+        return FileInfoData(
+            fileId: protoFile.fileID,
+            name: protoFile.name,
+            path: protoFile.path,
+            parentPath: protoFile.parentPath,
+            size: protoFile.size,
+            createdAt: Date(timeIntervalSince1970: TimeInterval(protoFile.createdAt)),
+            modifiedAt: Date(timeIntervalSince1970: TimeInterval(protoFile.modifiedAt)),
+            accessedAt: Date(timeIntervalSince1970: TimeInterval(protoFile.accessedAt)),
+            fileType: mapFileType(protoFile.fileType),
+            mimeType: protoFile.mimeType,
+            checksum: protoFile.checksum,
+            isDirectory: protoFile.isDirectory,
+            isSymlink: protoFile.isSymlink,
+            chunkCount: Int(protoFile.chunkCount),
+            chunkIds: protoFile.chunkIds,
+            replicationFactor: Int(protoFile.replicationFactor),
+            isCompressed: protoFile.isCompressed,
+            isEncrypted: protoFile.isEncrypted,
+            syncStatus: mapSyncStatus(protoFile.syncStatus)
+        )
+    }
+    
+    private func mapFileType(_ protoType: File_FileType) -> FileTypeData {
+        switch protoType {
+        case .unknown:
+            return .unknown
+        case .regular:
+            return .regular
+        case .directory:
+            return .directory
+        case .symlink:
+            return .symlink
+        case .blockDevice:
+            return .blockDevice
+        case .charDevice:
+            return .charDevice
+        case .fifo:
+            return .fifo
+        case .socket:
+            return .socket
+        case .UNRECOGNIZED(_):
+            return .unknown
+        }
+    }
+    
+    private func mapSyncStatus(_ protoStatus: File_SyncStatus) -> FileSyncStatusData {
+        switch protoStatus {
+        case .unknown:
+            return .unknown
+        case .synced:
+            return .synced
+        case .pending:
+            return .pending
+        case .syncing:
+            return .syncing
+        case .error:
+            return .error
+        case .conflict:
+            return .conflict
+        case .UNRECOGNIZED(_):
+            return .unknown
+        }
+    }
 }
 
 // MARK: - Error Types
@@ -472,4 +782,101 @@ enum GRPCError: Error, LocalizedError, Equatable {
             return "Unknown error occurred"
         }
     }
+}
+
+// MARK: - File Operation Data Structures
+
+struct FileInfoData: Codable, Equatable {
+    let fileId: String
+    let name: String
+    let path: String
+    let parentPath: String
+    let size: Int64
+    let createdAt: Date
+    let modifiedAt: Date
+    let accessedAt: Date
+    let fileType: FileTypeData
+    let mimeType: String
+    let checksum: String
+    let isDirectory: Bool
+    let isSymlink: Bool
+    let chunkCount: Int
+    let chunkIds: [String]
+    let replicationFactor: Int
+    let isCompressed: Bool
+    let isEncrypted: Bool
+    let syncStatus: FileSyncStatusData
+}
+
+enum FileTypeData: String, Codable, CaseIterable {
+    case unknown = "unknown"
+    case regular = "regular"
+    case directory = "directory"
+    case symlink = "symlink"
+    case blockDevice = "blockDevice"
+    case charDevice = "charDevice"
+    case fifo = "fifo"
+    case socket = "socket"
+}
+
+enum FileSyncStatusData: String, Codable, CaseIterable {
+    case unknown = "unknown"
+    case synced = "synced"
+    case pending = "pending"
+    case syncing = "syncing"
+    case error = "error"
+    case conflict = "conflict"
+}
+
+struct FileUploadMetadata: Codable, Equatable {
+    let name: String
+    let path: String
+    let mimeType: String
+    let checksum: String
+    let overwrite: Bool
+    let compress: Bool
+    let encrypt: Bool
+}
+
+struct FileListResult: Codable, Equatable {
+    let files: [FileInfoData]
+    let currentPath: String
+    let totalCount: Int
+    let totalSize: Int64
+}
+
+struct FileUploadResult: Codable, Equatable {
+    let success: Bool
+    let message: String
+    let bytesUploaded: Int64
+    let fileInfo: FileInfoData?
+}
+
+enum FileDownloadChunk: Equatable {
+    case fileInfo(FileInfoData)
+    case data(Data, offset: Int64, totalSize: Int64)
+}
+
+struct FileDeleteResult: Codable, Equatable {
+    let success: Bool
+    let message: String
+    let deletedCount: Int
+}
+
+struct FileCreateDirectoryResult: Codable, Equatable {
+    let success: Bool
+    let message: String
+    let directoryInfo: FileInfoData?
+}
+
+struct FileSyncStatusResult: Codable, Equatable {
+    let overallStatus: FileSyncStatusData
+    let pendingUploads: Int
+    let pendingDownloads: Int
+    let syncingFiles: Int
+    let errorFiles: Int
+    let conflictFiles: Int
+    let bytesToUpload: Int64
+    let bytesToDownload: Int64
+    let pendingFiles: [FileInfoData]
 }

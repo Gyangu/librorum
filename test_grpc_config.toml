@@ -1,0 +1,8 @@
+node_prefix = 'node'
+bind_host = '0.0.0.0'
+bind_port = 50051
+log_level = 'info'
+data_dir = '/Users/gy/Library/Application Support/librorum'
+heartbeat_interval = 5
+discovery_interval = 10
+known_nodes = []

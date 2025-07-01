@@ -195,6 +195,9 @@
 			);
 			mainGroup = 05C4B3632E094FCA00859576;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				05CCF5E22E0AC2B60016CC96 /* XCRemoteSwiftPackageReference "grpc-swift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 05C4B36D2E094FCA00859576 /* Products */;
 			projectDirPath = "";
@@ -609,6 +612,17 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		05CCF5E22E0AC2B60016CC96 /* XCRemoteSwiftPackageReference "grpc-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/grpc/grpc-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.2.3;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
 	};
 	rootObject = 05C4B3642E094FCA00859576 /* Project object */;
 }

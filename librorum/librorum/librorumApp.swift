@@ -13,6 +13,11 @@ struct librorumApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Item.self,
+            NodeInfo.self,
+            FileItem.self,
+            UserPreferences.self,
+            SystemHealth.self,
+            SyncHistory.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
@@ -25,8 +30,12 @@ struct librorumApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            MainView()
         }
         .modelContainer(sharedModelContainer)
+        #if os(macOS)
+        .windowStyle(DefaultWindowStyle())
+        .windowToolbarStyle(UnifiedWindowToolbarStyle())
+        #endif
     }
 }
