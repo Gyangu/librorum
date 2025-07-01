@@ -85,27 +85,27 @@ class CoreManager {
 
 ```mermaid
 graph TB
-    subgraph "macOS Host"
+    subgraph HOST["macOS Host"]
         RB[Rust Backend]
         SM[Swift macOS App]
-        RB ↔ SM
+        RB <--> SM
     end
     
-    subgraph "iOS Clients"
+    subgraph CLIENTS["iOS Clients"]
         SI1[Swift iOS App 1]
         SI2[Swift iOS App 2]
         SI3[Swift iOS App N]
     end
     
-    subgraph "Network Discovery"
+    subgraph DISCOVERY["Network Discovery"]
         MDNS[mDNS Service]
         SCAN[IP Range Scanner]
     end
     
-    RB ↔ MDNS
-    SI1 ↔ MDNS
-    SI2 ↔ SCAN
-    SI3 ↔ RB
+    RB <--> MDNS
+    SI1 <--> MDNS
+    SI2 <--> SCAN
+    SI3 <--> RB
     
     style RB fill:#f96,stroke:#333,stroke-width:3px
     style SM fill:#5bf,stroke:#333,stroke-width:2px
@@ -333,27 +333,27 @@ class CoreManager {
 
 ```mermaid
 graph TB
-    subgraph "macOS Host"
+    subgraph HOST["macOS Host"]
         RB[Rust Backend]
         SM[Swift macOS App]
-        RB ↔ SM
+        RB <--> SM
     end
     
-    subgraph "iOS Clients"
+    subgraph CLIENTS["iOS Clients"]
         SI1[Swift iOS App 1]
         SI2[Swift iOS App 2]
         SI3[Swift iOS App N]
     end
     
-    subgraph "Network Discovery"
+    subgraph DISCOVERY["Network Discovery"]
         MDNS[mDNS Service]
         SCAN[IP Range Scanner]
     end
     
-    RB ↔ MDNS
-    SI1 ↔ MDNS
-    SI2 ↔ SCAN
-    SI3 ↔ RB
+    RB <--> MDNS
+    SI1 <--> MDNS
+    SI2 <--> SCAN
+    SI3 <--> RB
     
     style RB fill:#f96,stroke:#333,stroke-width:3px
     style SM fill:#5bf,stroke:#333,stroke-width:2px
