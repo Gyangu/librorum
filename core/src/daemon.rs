@@ -1,4 +1,4 @@
-use crate::config::NodeConfig;
+use librorum_shared::NodeConfig;
 use crate::logger;
 use anyhow::{Context, Result, anyhow};
 use std::env;

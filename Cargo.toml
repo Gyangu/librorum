@@ -1,9 +1,37 @@
 [workspace]
-members = ["core", "examples/tklog_test", "examples/mdns_test"]
+members = [
+    "shared",
+    "core", 
+    "cli",
+    "examples/tklog_test", 
+    "examples/mdns_test"
+]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 authors = ["gyangu <gyangu_star@icloud.com>"]
 license = "MIT"
+
+[workspace.dependencies]
+# Shared dependencies across workspace
+tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "signal", "process"] }
+tonic = "0.11.0"
+prost = "0.12.3"
+anyhow = "1.0.80"
+thiserror = "1.0.56"
+tracing = "0.1.40"
+serde = { version = "1.0.195", features = ["derive"] }
+toml = "0.5.11"
+clap = { version = "4.4.16", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true

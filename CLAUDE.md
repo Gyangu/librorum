@@ -4,25 +4,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Librorum is a distributed file system with a **dual-architecture design**:
-- **Rust Backend** (`/core/`): High-performance daemon with node management, service discovery, and gRPC communication
+Librorum is a distributed file system with a **three-folder architecture**:
+- **Shared Library** (`/shared/`): Common gRPC definitions, configuration, and utilities
+- **Core Daemon** (`/core/`): Pure daemon process with node management and service discovery
+- **CLI Client** (`/cli/`): Command-line client that connects to daemon via gRPC
 - **Swift Client** (`/client/`): Cross-platform SwiftUI application for macOS and iOS
 
 ## Build Commands
 
-### Backend (Rust)
+### Three-Folder Architecture
+
+#### Shared Library
 ```bash
-# Build the backend
-cargo build --release
-
-# Development build
-cargo build
-
-# Build from core directory
-cd core && cargo build --release
+# Build shared components (gRPC, config, utils)
+cargo build -p librorum-shared
 ```
 
-### Client (Swift)
+#### Core Daemon
+```bash
+# Build the core daemon
+cargo build -p librorum-core --release
+
+# Development build
+cargo build -p librorum-core
+```
+
+#### CLI Client
+```bash
+# Build the CLI client
+cargo build -p librorum-cli --release
+```
+
+#### Client (Swift)
 ```bash
 # Open in Xcode
 open client/librorum.xcodeproj
@@ -32,8 +45,13 @@ cd client && swift build
 ```
 
 ### Integrated Build
+```bash
+# Build all components
+cargo build --all --release
+```
+
 The `core/build.rs` script automatically:
-1. Compiles Protocol Buffers
+1. Compiles Protocol Buffers via shared library
 2. Copies the compiled Rust binary to `client/librorum/Resources/librorum_backend`
 3. Sets executable permissions on Unix systems
 
@@ -41,12 +59,22 @@ The `core/build.rs` script automatically:
 
 ### Core Components
 
-**Rust Backend (`/core/src/`)**:
-- `main.rs`: CLI with subcommands (`start`, `stop`, `restart`, `status`, `logs`, `init`, `nodes-status`)
+**Shared Library (`/shared/src/`)**:
+- `config.rs`: TOML configuration management
+- `utils.rs`: Common utility functions (UUID, time, formatting)
+- `proto/`: gRPC service definitions (node, file, log services)
+
+**Core Daemon (`/core/src/`)**:
+- `main.rs`: Pure daemon process (no CLI commands)
 - `daemon.rs`: Cross-platform daemon management (Unix/Windows)
 - `node_manager/`: Distributed node management and mDNS discovery
-- `config.rs`: TOML configuration management
 - `logger.rs`: Structured logging with tracing crate
+- `vdfs/`: Virtual distributed file system implementation
+
+**CLI Client (`/cli/src/`)**:
+- `main.rs`: Command-line interface with gRPC client
+- `lib.rs`: Core CLI functionality for testing
+- Connects to daemon via gRPC for all operations
 
 **Swift Client (`/client/librorum/`)**:
 - **Models/**: SwiftData models (`FileItem`, `SyncHistory`, `UserPreferences`, `AppSettings`)
@@ -62,11 +90,22 @@ The `core/build.rs` script automatically:
 ## Development Workflow
 
 ### Service Management
+
+#### Core Daemon
+```bash
+# Start the core daemon directly
+./target/release/librorum-core --config librorum.toml --daemon
+
+# Start with debug logging
+./target/release/librorum-core --verbose --daemon
+```
+
+#### CLI Operations (Connect to running daemon)
 ```bash
 # Initialize configuration
 ./target/release/librorum init
 
-# Start daemon
+# Start daemon via CLI
 ./target/release/librorum start --config librorum.toml
 
 # Check status
@@ -80,6 +119,9 @@ The `core/build.rs` script automatically:
 
 # Check nodes
 ./target/release/librorum nodes-status
+
+# Connect to remote daemon
+./target/release/librorum --server http://192.168.1.100:50051 status
 ```
 
 ### Configuration

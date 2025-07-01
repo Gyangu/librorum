@@ -1,5 +1,6 @@
-use crate::config::NodeConfig;
+use librorum_shared::NodeConfig;
 use crate::proto::file::file_service_server::FileServiceServer;
+use crate::proto::log::log_service_server::LogServiceServer;
 use crate::proto::node::node_service_server::NodeServiceServer;
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
@@ -12,6 +13,7 @@ use tonic::transport::Server;
 use tracing::{debug, info, warn};
 
 use crate::node_manager::file_service::FileServiceImpl;
+use crate::node_manager::log_service::LogServiceImpl;
 use crate::node_manager::mdns_manager::MdnsManager;
 use crate::node_manager::node_client::NodeClient;
 use crate::node_manager::node_health::{HealthMonitor, NodeHealth, NodeStatus};
@@ -241,11 +243,16 @@ impl NodeManager {
         // 创建文件服务
         let file_service = FileServiceImpl::new();
 
+        // 创建日志服务
+        let log_service = LogServiceImpl::new();
+        log_service.init_sample_logs().await;
+
         // 启动gRPC服务器
         info!("启动gRPC服务器: {}", addr);
         Server::builder()
             .add_service(NodeServiceServer::new(node_service))
             .add_service(FileServiceServer::new(file_service))
+            .add_service(LogServiceServer::new(log_service))
             .serve(addr)
             .await
             .with_context(|| format!("gRPC服务器启动失败: {}", addr))?;

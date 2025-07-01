@@ -1,0 +1,107 @@
+syntax = "proto3";
+package node;
+
+// 节点服务定义
+service NodeService {
+  // 发送心跳包
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+  
+  // 获取节点列表
+  rpc GetNodeList (NodeListRequest) returns (NodeListResponse);
+  
+  // 获取系统健康状态
+  rpc GetSystemHealth (SystemHealthRequest) returns (SystemHealthResponse);
+  
+  // 添加节点
+  rpc AddNode (AddNodeRequest) returns (AddNodeResponse);
+  
+  // 移除节点
+  rpc RemoveNode (RemoveNodeRequest) returns (RemoveNodeResponse);
+}
+
+// 心跳请求
+message HeartbeatRequest {
+  string node_id = 1;        // 节点ID，格式: nanoid.设备名.librorum.local
+  string address = 2;        // 节点服务地址，如: 192.168.1.100:50051
+  string system_info = 3;    // 系统信息，如: Windows 10, macOS 13.5
+  int64 timestamp = 4;       // 发送时间戳
+}
+
+// 心跳响应
+message HeartbeatResponse {
+  string node_id = 1;        // 响应节点ID
+  string address = 2;        // 响应节点地址
+  string system_info = 3;    // 响应节点系统信息
+  int64 timestamp = 4;       // 响应时间戳 
+  bool status = 5;           // 节点状态，true表示正常
+}
+
+// 节点列表请求
+message NodeListRequest {
+  bool include_offline = 1;   // 是否包含离线节点
+}
+
+// 节点列表响应
+message NodeListResponse {
+  repeated NodeInfo nodes = 1;  // 节点列表
+  int32 total_count = 2;        // 总节点数
+  int32 online_count = 3;       // 在线节点数
+  int32 offline_count = 4;      // 离线节点数
+}
+
+// 节点信息
+message NodeInfo {
+  string node_id = 1;           // 节点ID
+  string address = 2;           // 节点地址
+  string system_info = 3;       // 系统信息
+  string status = 4;            // 状态: "online", "offline", "connecting", "error"
+  int64 last_heartbeat = 5;     // 最后心跳时间戳
+  int32 connection_count = 6;   // 连接计数
+  int32 failure_count = 7;      // 失败计数
+  double latency_ms = 8;        // 延迟（毫秒）
+  bool is_online = 9;           // 是否在线
+  int64 discovered_at = 10;     // 发现时间戳
+}
+
+// 系统健康状态请求
+message SystemHealthRequest {
+  // 空请求
+}
+
+// 系统健康状态响应
+message SystemHealthResponse {
+  int64 total_storage = 1;      // 总存储空间（字节）
+  int64 used_storage = 2;       // 已用存储空间（字节）
+  int64 available_storage = 3;  // 可用存储空间（字节）
+  int32 total_files = 4;        // 总文件数
+  int32 total_chunks = 5;       // 总分块数
+  double network_latency = 6;   // 网络延迟（秒）
+  int32 error_count = 7;        // 错误计数
+  int64 uptime_seconds = 8;     // 运行时间（秒）
+  int64 memory_usage = 9;       // 内存使用（字节）
+  double cpu_usage = 10;        // CPU使用率（百分比）
+  int64 timestamp = 11;         // 时间戳
+}
+
+// 添加节点请求
+message AddNodeRequest {
+  string address = 1;           // 节点地址
+}
+
+// 添加节点响应
+message AddNodeResponse {
+  bool success = 1;             // 是否成功
+  string message = 2;           // 响应消息
+  NodeInfo node = 3;            // 节点信息（如果成功）
+}
+
+// 移除节点请求
+message RemoveNodeRequest {
+  string node_id = 1;           // 节点ID
+}
+
+// 移除节点响应
+message RemoveNodeResponse {
+  bool success = 1;             // 是否成功
+  string message = 2;           // 响应消息
+} 

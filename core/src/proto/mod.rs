@@ -1,7 +1,2 @@
-pub mod node {
-    tonic::include_proto!("node");
-}
-
-pub mod file {
-    tonic::include_proto!("file");
-} 
+// gRPC 服务定义 - 使用shared库中的定义
+pub use librorum_shared::proto::*; 

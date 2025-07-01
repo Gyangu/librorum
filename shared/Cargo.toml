@@ -1,0 +1,35 @@
+[package]
+name = "librorum-shared"
+version = "0.1.0"
+edition = "2021"
+description = "Shared library for gRPC definitions and common utilities"
+license = "MIT"
+authors = ["gyangu <gyangu_star@icloud.com>"]
+
+[lib]
+name = "librorum_shared"
+path = "src/lib.rs"
+
+[dependencies]
+# gRPC
+tonic = "0.11.0"
+prost = "0.12.3"
+tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
+
+# 配置和序列化
+serde = { version = "1.0.195", features = ["derive"] }
+toml = "0.5.11"
+anyhow = "1.0.80"
+thiserror = "1.0.56"
+
+# 工具类
+uuid = { version = "1.6.1", features = ["v4", "serde"] }
+chrono = { version = "0.4.34", features = ["serde"] }
+tracing = "0.1.40"
+dirs = "5.0.1"
+
+[build-dependencies]
+tonic-build = "0.11.0"
+
+[dev-dependencies]
+tempfile = "3.8.1"

@@ -116,15 +116,24 @@ graph TB
 
 ```
 librorum/
-├── 🦀 core/                     # Rust 高性能后端
+├── 🗂️ shared/                  # 共享库 (gRPC协议、配置管理、工具函数)
 │   ├── src/
-│   │   ├── 🎯 main.rs           # 服务入口
+│   │   ├── 🔌 proto/            # gRPC 协议定义
+│   │   ├── 🔧 config.rs         # 配置管理
+│   │   └── 🛠️ utils.rs          # 通用工具函数
+│   └── 📦 Cargo.toml
+├── 🦀 core/                     # Rust 高性能守护进程
+│   ├── src/
+│   │   ├── 🎯 main.rs           # 守护进程入口
 │   │   ├── ⚙️ daemon.rs         # 跨平台守护进程
 │   │   ├── 📊 logger.rs         # 结构化日志系统
-│   │   ├── 🔧 config.rs         # 配置管理
 │   │   ├── 🌐 node_manager/     # 分布式节点管理
-│   │   ├── 💾 vdfs/             # 虚拟分布式文件系统
-│   │   └── 🔌 proto/            # gRPC 协议定义
+│   │   └── 💾 vdfs/             # 虚拟分布式文件系统
+│   └── 📦 Cargo.toml
+├── 💻 cli/                      # 命令行客户端 (gRPC通信)
+│   ├── src/
+│   │   ├── 🎯 main.rs           # CLI入口
+│   │   └── 📚 lib.rs            # 核心功能库
 │   └── 📦 Cargo.toml
 ├── 🍎 client/librorum/          # Swift 跨平台客户端
 │   ├── 🎨 Views/                # SwiftUI 界面组件
@@ -147,16 +156,21 @@ librorum/
 
 #### 🔨 构建步骤
 
-**1. 后端构建**
+**1. 构建所有组件**
 ```bash
-# 高性能发布版本
+# 构建所有Rust组件（共享库、守护进程、CLI）
 cargo build --release
 
 # 开发调试版本  
 cargo build
+
+# 单独构建组件
+cargo build -p librorum-shared    # 构建共享库
+cargo build -p librorum-core      # 构建核心守护进程
+cargo build -p librorum-cli       # 构建命令行客户端
 ```
 
-**2. 客户端构建**
+**2. Swift客户端构建**
 ```bash
 # Xcode 构建
 open client/librorum.xcodeproj
@@ -172,14 +186,17 @@ xcodebuild -scheme librorum -destination "platform=iOS,name=iPhone" build
 # 初始化配置
 ./target/release/librorum init
 
-# 启动分布式服务
+# 启动核心守护进程（直接启动）
+./target/release/librorum-core --config librorum.toml
+
+# 或通过CLI管理守护进程
 ./target/release/librorum start --config librorum.toml
 
 # 实时状态监控
 ./target/release/librorum status
 
 # 查看结构化日志
-./target/release/librorum logs --tail 50 --level info
+./target/release/librorum logs --tail 50
 
 # 网络节点状态
 ./target/release/librorum nodes-status
@@ -364,15 +381,24 @@ graph TB
 
 ```
 librorum/
-├── 🦀 core/                     # Rust high-performance backend
+├── 🗂️ shared/                  # Shared library (gRPC protocols, config, utilities)
 │   ├── src/
-│   │   ├── 🎯 main.rs           # Service entry point
+│   │   ├── 🔌 proto/            # gRPC protocol definitions
+│   │   ├── 🔧 config.rs         # Configuration management
+│   │   └── 🛠️ utils.rs          # Common utility functions
+│   └── 📦 Cargo.toml
+├── 🦀 core/                     # Rust high-performance daemon
+│   ├── src/
+│   │   ├── 🎯 main.rs           # Daemon entry point
 │   │   ├── ⚙️ daemon.rs         # Cross-platform daemon
 │   │   ├── 📊 logger.rs         # Structured logging system
-│   │   ├── 🔧 config.rs         # Configuration management
 │   │   ├── 🌐 node_manager/     # Distributed node management
-│   │   ├── 💾 vdfs/             # Virtual Distributed File System
-│   │   └── 🔌 proto/            # gRPC protocol definitions
+│   │   └── 💾 vdfs/             # Virtual Distributed File System
+│   └── 📦 Cargo.toml
+├── 💻 cli/                      # Command-line client (gRPC communication)
+│   ├── src/
+│   │   ├── 🎯 main.rs           # CLI entry point
+│   │   └── 📚 lib.rs            # Core functionality library
 │   └── 📦 Cargo.toml
 ├── 🍎 client/librorum/          # Swift cross-platform client
 │   ├── 🎨 Views/                # SwiftUI interface components
@@ -395,16 +421,21 @@ librorum/
 
 #### 🔨 Build Steps
 
-**1. Backend Build**
+**1. Build All Components**
 ```bash
-# High-performance release build
+# Build all Rust components (shared library, daemon, CLI)
 cargo build --release
 
 # Development debug build  
 cargo build
+
+# Build individual components
+cargo build -p librorum-shared    # Build shared library
+cargo build -p librorum-core      # Build core daemon
+cargo build -p librorum-cli       # Build command-line client
 ```
 
-**2. Client Build**
+**2. Swift Client Build**
 ```bash
 # Xcode build
 open client/librorum.xcodeproj
@@ -420,14 +451,17 @@ xcodebuild -scheme librorum -destination "platform=iOS,name=iPhone" build
 # Initialize configuration
 ./target/release/librorum init
 
-# Start distributed service
+# Start core daemon (direct launch)
+./target/release/librorum-core --config librorum.toml
+
+# Or manage daemon through CLI
 ./target/release/librorum start --config librorum.toml
 
 # Real-time status monitoring
 ./target/release/librorum status
 
 # View structured logs
-./target/release/librorum logs --tail 50 --level info
+./target/release/librorum logs --tail 50
 
 # Network node status
 ./target/release/librorum nodes-status

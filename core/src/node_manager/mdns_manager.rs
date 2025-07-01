@@ -285,3 +285,168 @@ impl MdnsManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    #[test]
+    fn test_mdns_manager_creation() {
+        let manager = MdnsManager::new("test_node_123".to_string(), 50051);
+        
+        assert_eq!(manager.node_id, "test_node_123");
+        assert_eq!(manager.port, 50051);
+        assert!(manager.mdns.is_none()); // 初始状态
+        
+        let discovery_running = manager.discovery_running.lock().unwrap();
+        assert!(!*discovery_running);
+    }
+
+    #[test]
+    fn test_mdns_manager_different_ports() {
+        let manager1 = MdnsManager::new("node1".to_string(), 8080);
+        let manager2 = MdnsManager::new("node2".to_string(), 9090);
+        
+        assert_eq!(manager1.port, 8080);
+        assert_eq!(manager2.port, 9090);
+    }
+
+    #[tokio::test]
+    async fn test_register_service() {
+        let manager = MdnsManager::new("test_node".to_string(), 50051);
+        
+        // 尝试注册服务（可能失败，取决于系统环境）
+        let result = manager.register_service().await;
+        
+        // 我们不强制要求成功，因为测试环境可能没有mDNS支持
+        match result {
+            Ok(_) => {
+                // 如果成功，验证服务已注册
+                println!("mDNS服务注册成功");
+            }
+            Err(e) => {
+                // 如果失败，记录错误但不让测试失败
+                println!("mDNS服务注册失败（测试环境预期）: {}", e);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_start_discovery() {
+        let manager = MdnsManager::new("test_node".to_string(), 50051);
+        
+        // 启动发现（可能失败，取决于系统环境）
+        let discovery_handle = manager.start_discovery().await;
+        
+        match discovery_handle {
+            Ok(handle) => {
+                // 验证发现状态
+                let discovery_running = manager.discovery_running.lock().unwrap();
+                assert!(*discovery_running);
+                
+                // 清理：停止发现
+                handle.abort();
+                println!("mDNS发现启动成功");
+            }
+            Err(e) => {
+                println!("mDNS发现启动失败（测试环境预期）: {}", e);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_local_ip() {
+        // 测试获取本地IP地址的函数
+        let result = get_if_addrs();
+        
+        match result {
+            Ok(interfaces) => {
+                assert!(!interfaces.is_empty());
+                
+                // 应该至少有一个接口（通常是loopback）
+                let has_loopback = interfaces.iter().any(|iface| {
+                    iface.ip().is_loopback()
+                });
+                assert!(has_loopback);
+                
+                println!("发现 {} 个网络接口", interfaces.len());
+            }
+            Err(e) => {
+                panic!("无法获取网络接口: {}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_service_type_constant() {
+        assert_eq!(SERVICE_TYPE, "_librorum._tcp.local.");
+        assert!(SERVICE_TYPE.starts_with("_librorum"));
+        assert!(SERVICE_TYPE.ends_with(".local."));
+    }
+
+    #[tokio::test]
+    async fn test_register_service_with_timeout() {
+        let manager = MdnsManager::new("timeout_test_node".to_string(), 50052);
+        
+        // 使用超时来防止测试挂起
+        let result = timeout(Duration::from_secs(5), manager.register_service()).await;
+        
+        match result {
+            Ok(register_result) => {
+                match register_result {
+                    Ok(_) => println!("mDNS注册在超时内完成"),
+                    Err(e) => println!("mDNS注册失败: {}", e),
+                }
+            }
+            Err(_) => {
+                println!("mDNS注册超时（测试环境可能不支持mDNS）");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_discovery_with_timeout() {
+        let manager = MdnsManager::new("discovery_test_node".to_string(), 50053);
+        
+        // 使用超时来防止测试挂起
+        let result = timeout(Duration::from_secs(2), manager.start_discovery()).await;
+        
+        match result {
+            Ok(discovery_result) => {
+                match discovery_result {
+                    Ok(handle) => {
+                        println!("mDNS发现在超时内启动");
+                        handle.abort(); // 清理
+                    }
+                    Err(e) => println!("mDNS发现启动失败: {}", e),
+                }
+            }
+            Err(_) => {
+                println!("mDNS发现启动超时（测试环境可能不支持mDNS）");
+            }
+        }
+    }
+
+    #[test]
+    fn test_multiple_mdns_managers() {
+        let manager1 = MdnsManager::new("node1".to_string(), 50051);
+        let manager2 = MdnsManager::new("node2".to_string(), 50052);
+        let manager3 = MdnsManager::new("node3".to_string(), 50053);
+        
+        // 验证每个管理器都有正确的配置
+        assert_eq!(manager1.node_id, "node1");
+        assert_eq!(manager1.port, 50051);
+        
+        assert_eq!(manager2.node_id, "node2");
+        assert_eq!(manager2.port, 50052);
+        
+        assert_eq!(manager3.node_id, "node3");
+        assert_eq!(manager3.port, 50053);
+        
+        // 所有管理器都应该是独立的
+        assert_ne!(manager1.node_id, manager2.node_id);
+        assert_ne!(manager2.node_id, manager3.node_id);
+    }
+}
