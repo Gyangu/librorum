@@ -1,12 +1,18 @@
 use crate::proto::node::node_service_server::NodeService;
-use crate::proto::node::{HeartbeatRequest, HeartbeatResponse};
+use crate::proto::node::{
+    HeartbeatRequest, HeartbeatResponse,
+    NodeListRequest, NodeListResponse, NodeInfo as ProtoNodeInfo,
+    SystemHealthRequest, SystemHealthResponse,
+    AddNodeRequest, AddNodeResponse,
+    RemoveNodeRequest, RemoveNodeResponse,
+};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::node_manager::node_health::HealthMonitor;
 
@@ -256,5 +262,246 @@ impl NodeService for NodeServiceImpl {
         }
 
         Ok(Response::new(reply))
+    }
+
+    async fn get_node_list(
+        &self,
+        request: Request<NodeListRequest>,
+    ) -> Result<Response<NodeListResponse>, Status> {
+        let req = request.into_inner();
+        
+        info!("收到节点列表请求, include_offline: {}", req.include_offline);
+        
+        let nodes = self.nodes.lock().await;
+        let mut node_list = Vec::new();
+        let mut online_count = 0;
+        let mut offline_count = 0;
+        
+        for (address, conn) in nodes.iter() {
+            let is_online = conn.status == NodeConnectionStatus::Online;
+            let status = if is_online {
+                online_count += 1;
+                "online".to_string()
+            } else {
+                offline_count += 1;
+                if conn.failure_count > 0 {
+                    "error".to_string()
+                } else {
+                    "offline".to_string()
+                }
+            };
+            
+            // 根据请求决定是否包含离线节点
+            if !req.include_offline && !is_online {
+                continue;
+            }
+            
+            let node_info = ProtoNodeInfo {
+                node_id: conn.info.id.clone(),
+                address: address.clone(),
+                system_info: conn.info.system.clone(),
+                status,
+                last_heartbeat: conn.last_connection,
+                connection_count: conn.success_count as i32,
+                failure_count: conn.failure_count as i32,
+                latency_ms: 0.0, // 暂时固定值
+                is_online,
+                discovered_at: conn.last_connection,
+            };
+            
+            node_list.push(node_info);
+        }
+        
+        let response = NodeListResponse {
+            nodes: node_list,
+            total_count: (online_count + offline_count) as i32,
+            online_count: online_count as i32,
+            offline_count: offline_count as i32,
+        };
+        
+        info!("返回节点列表: {} 个节点 ({} 在线, {} 离线)", 
+              response.total_count, response.online_count, response.offline_count);
+        
+        Ok(Response::new(response))
+    }
+
+    async fn get_system_health(
+        &self,
+        _request: Request<SystemHealthRequest>,
+    ) -> Result<Response<SystemHealthResponse>, Status> {
+        info!("收到系统健康状态请求");
+        
+        // 获取系统信息（简化实现）
+        let memory_usage = 134_217_728i64; // 128MB 模拟值
+        let cpu_usage = 15.5; // 模拟CPU使用率
+        
+        // 模拟存储信息（实际应该从VDFS获取）
+        let total_storage = 1_073_741_824i64; // 1GB
+        let used_storage = 268_435_456i64;    // 256MB
+        let available_storage = total_storage - used_storage;
+        
+        // 计算网络延迟（基于当前节点连接）
+        let nodes = self.nodes.lock().await;
+        let avg_latency = if nodes.is_empty() {
+            0.0
+        } else {
+            0.025 // 固定延迟值
+        };
+        
+        // 计算运行时间（简化实现）
+        let uptime = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        
+        let response = SystemHealthResponse {
+            total_storage,
+            used_storage,
+            available_storage,
+            total_files: 150,           // 模拟数据
+            total_chunks: 750,          // 模拟数据
+            network_latency: avg_latency,
+            error_count: nodes.values().map(|conn| conn.failure_count as i32).sum(),
+            uptime_seconds: uptime % 86400, // 当日运行时间
+            memory_usage,
+            cpu_usage,
+            timestamp: chrono::Utc::now().timestamp(),
+        };
+        
+        info!("返回系统健康状态: {}MB 内存使用, {}% CPU", 
+              response.memory_usage / 1024 / 1024, response.cpu_usage);
+        
+        Ok(Response::new(response))
+    }
+
+    async fn add_node(
+        &self,
+        request: Request<AddNodeRequest>,
+    ) -> Result<Response<AddNodeResponse>, Status> {
+        let req = request.into_inner();
+        
+        info!("收到添加节点请求: {}", req.address);
+        
+        // 验证地址格式
+        if !self.is_valid_address(&req.address) {
+            let response = AddNodeResponse {
+                success: false,
+                message: "无效的节点地址格式".to_string(),
+                node: None,
+            };
+            return Ok(Response::new(response));
+        }
+        
+        // 检查节点是否已存在
+        let mut nodes = self.nodes.lock().await;
+        if nodes.contains_key(&req.address) {
+            let response = AddNodeResponse {
+                success: false,
+                message: "节点已存在".to_string(),
+                node: None,
+            };
+            return Ok(Response::new(response));
+        }
+        
+        // 创建新的节点连接
+        let node_id = format!("manual.{}.librorum.local", req.address.replace(":", "_"));
+        let node_info = NodeInfo {
+            id: node_id.clone(),
+            address: req.address.clone(),
+            system: "Manually Added".to_string(),
+            last_seen: chrono::Utc::now().timestamp(),
+        };
+        
+        let conn = NodeConnection {
+            info: node_info,
+            status: NodeConnectionStatus::Offline,
+            last_connection: chrono::Utc::now().timestamp(),
+            success_count: 0,
+            failure_count: 0,
+        };
+        
+        let node_info = ProtoNodeInfo {
+            node_id: node_id.clone(),
+            address: req.address.clone(),
+            system_info: conn.info.system.clone(),
+            status: "connecting".to_string(),
+            last_heartbeat: conn.last_connection,
+            connection_count: 0,
+            failure_count: 0,
+            latency_ms: 0.0,
+            is_online: false,
+            discovered_at: conn.last_connection,
+        };
+        
+        nodes.insert(req.address.clone(), conn);
+        drop(nodes);
+        
+        let response = AddNodeResponse {
+            success: true,
+            message: "节点添加成功".to_string(),
+            node: Some(node_info),
+        };
+        
+        info!("成功添加节点: {} ({})", req.address, node_id);
+        
+        Ok(Response::new(response))
+    }
+
+    async fn remove_node(
+        &self,
+        request: Request<RemoveNodeRequest>,
+    ) -> Result<Response<RemoveNodeResponse>, Status> {
+        let req = request.into_inner();
+        
+        info!("收到移除节点请求: {}", req.node_id);
+        
+        let mut nodes = self.nodes.lock().await;
+        
+        // 查找并移除节点
+        let mut found = false;
+        let mut removed_address = String::new();
+        
+        nodes.retain(|address, conn| {
+            if conn.info.id == req.node_id {
+                found = true;
+                removed_address = address.clone();
+                false // 移除这个节点
+            } else {
+                true // 保留其他节点
+            }
+        });
+        
+        let response = if found {
+            info!("成功移除节点: {} ({})", req.node_id, removed_address);
+            RemoveNodeResponse {
+                success: true,
+                message: format!("节点 {} 已移除", req.node_id),
+            }
+        } else {
+            warn!("未找到节点: {}", req.node_id);
+            RemoveNodeResponse {
+                success: false,
+                message: format!("未找到节点: {}", req.node_id),
+            }
+        };
+        
+        Ok(Response::new(response))
+    }
+}
+
+impl NodeServiceImpl {
+    /// 验证地址格式
+    fn is_valid_address(&self, address: &str) -> bool {
+        let parts: Vec<&str> = address.split(':').collect();
+        if parts.len() != 2 {
+            return false;
+        }
+        
+        // 验证端口
+        if let Ok(port) = parts[1].parse::<u16>() {
+            port > 0
+        } else {
+            false
+        }
     }
 }

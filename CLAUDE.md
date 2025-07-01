@@ -95,6 +95,11 @@ The `core/build.rs` script automatically:
 
 ## Important Notes
 
+### TODO Management
+- **PROJECT_TODO.md**: 包含所有项目TODO的跟踪文件，每次开始工作前应查看此文件
+- **TodoRead/TodoWrite**: 使用内置工具跟踪当前会话的任务进度
+- **状态更新**: 完成任务后需要更新PROJECT_TODO.md中的相应状态
+
 ### Code Patterns
 - **Swift**: Uses Observation framework, SwiftUI, and SwiftData
 - **Rust**: Async/await with Tokio, structured error handling with anyhow/thiserror
