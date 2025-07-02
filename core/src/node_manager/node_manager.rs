@@ -240,8 +240,29 @@ impl NodeManager {
             .parse()
             .with_context(|| format!("解析地址失败: {}", self.bind_address))?;
 
-        // 创建文件服务
-        let file_service = FileServiceImpl::new();
+        // 创建文件服务并初始化VDFS
+        let mut file_service = FileServiceImpl::new();
+        
+        // 初始化VDFS配置
+        let vdfs_config = if let Some(config) = &self.config {
+            crate::vdfs::VDFSConfig {
+                storage_path: config.data_dir.clone(),
+                chunk_size: 4096,
+                enable_compression: false,
+                cache_memory_size: 64 * 1024 * 1024, // 64MB
+                cache_disk_size: 512 * 1024 * 1024, // 512MB
+                replication_factor: 3,
+                network_timeout: std::time::Duration::from_secs(30),
+            }
+        } else {
+            crate::vdfs::VDFSConfig::default()
+        };
+        
+        // 异步初始化VDFS
+        if let Err(e) = file_service.init_vdfs(vdfs_config).await {
+            warn!("Failed to initialize VDFS for FileService: {}", e);
+            info!("FileService will fall back to memory storage");
+        }
 
         // 创建日志服务
         let log_service = LogServiceImpl::new();

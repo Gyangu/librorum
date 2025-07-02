@@ -20,7 +20,14 @@ librorum-shared = { path = "../shared" }
 
 # gRPC client
 tonic = "0.11.0"
-tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros", "fs", "io-util"] }
+tokio-stream = "0.1.14"
+
+# File type detection
+mime_guess = "2.0.4"
+
+# Time handling
+chrono = { version = "0.4.31", features = ["serde"] }
 
 # CLI framework
 clap = { version = "4.4.16", features = ["derive"] }

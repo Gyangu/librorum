@@ -20,8 +20,8 @@ use tokio::time::{interval, sleep};
 pub struct CacheManager {
     /// L1 缓存：内存缓存 (最快)
     memory_cache: Arc<MemoryCache>,
-    /// L2 缓存：磁盘缓存 (持久化)
-    disk_cache: Arc<DiskCache>,
+    /// L2 缓存：磁盘缓存 (持久化, 可选)
+    disk_cache: Option<Arc<DiskCache>>,
     /// 分布式缓存 (可选)
     distributed_cache: Option<Box<dyn DistributedCache>>,
     /// 缓存策略配置
@@ -37,6 +37,28 @@ pub struct CacheManager {
 }
 
 impl CacheManager {
+    /// 创建仅内存缓存的缓存管理器
+    pub async fn new_memory_only(
+        memory_cache: MemoryCache,
+        policy: CachePolicy,
+    ) -> VDFSResult<Self> {
+        let hybrid_config = HybridCacheConfig::default();
+        let writeback_config = WriteBackConfig::default();
+        
+        let manager = Self {
+            memory_cache: Arc::new(memory_cache),
+            disk_cache: None,
+            distributed_cache: None,
+            policy,
+            hybrid_config,
+            writeback_config,
+            combined_stats: Arc::new(Mutex::new(CacheStats::new())),
+            writeback_shutdown: Arc::new(Mutex::new(None)),
+        };
+
+        Ok(manager)
+    }
+
     /// 创建新的缓存管理器
     pub async fn new(
         memory_cache: MemoryCache,
@@ -49,7 +71,7 @@ impl CacheManager {
         
         let manager = Self {
             memory_cache: Arc::new(memory_cache),
-            disk_cache: Arc::new(disk_cache),
+            disk_cache: Some(Arc::new(disk_cache)),
             distributed_cache,
             policy,
             hybrid_config,
@@ -110,29 +132,33 @@ impl CacheManager {
         // 保存关闭信号发送器
         *self.writeback_shutdown.lock().await = Some(shutdown_tx);
 
-        // 启动后台任务
-        tokio::spawn(async move {
-            let mut interval = interval(writeback_config.interval);
-            
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        // 执行 Write-back
-                        if let Err(e) = Self::execute_writeback(
-                            &memory_cache, 
-                            &disk_cache, 
-                            &writeback_config
-                        ).await {
-                            eprintln!("Write-back error: {}", e);
+        // 启动后台任务 (仅在有磁盘缓存时)
+        if disk_cache.is_some() {
+            tokio::spawn(async move {
+                let mut interval = interval(writeback_config.interval);
+                
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            // 执行 Write-back
+                            if let Some(ref disk_cache) = disk_cache {
+                                if let Err(e) = Self::execute_writeback(
+                                    &memory_cache, 
+                                    disk_cache, 
+                                    &writeback_config
+                                ).await {
+                                    eprintln!("Write-back error: {}", e);
+                                }
+                            }
+                        },
+                        _ = &mut shutdown_rx => {
+                            println!("Write-back task shutting down");
+                            break;
                         }
-                    },
-                    _ = &mut shutdown_rx => {
-                        println!("Write-back task shutting down");
-                        break;
                     }
                 }
-            }
-        });
+            });
+        }
 
         Ok(())
     }
@@ -185,17 +211,19 @@ impl CacheManager {
             return Some(value);
         }
         
-        // L2: 磁盘缓存
-        if let Some(value) = self.disk_cache.get(key).await {
-            // 根据策略决定是否提升到内存缓存
-            if let CacheValue::FileData(ref data) | CacheValue::ChunkData(ref data) = value {
-                if self.should_cache_in_memory(data.len(), 1) {
-                    let _ = self.memory_cache.put(key.clone(), value.clone()).await;
+        // L2: 磁盘缓存 (如果可用)
+        if let Some(ref disk_cache) = self.disk_cache {
+            if let Some(value) = disk_cache.get(key).await {
+                // 根据策略决定是否提升到内存缓存
+                if let CacheValue::FileData(ref data) | CacheValue::ChunkData(ref data) = value {
+                    if self.should_cache_in_memory(data.len(), 1) {
+                        let _ = self.memory_cache.put(key.clone(), value.clone()).await;
+                    }
                 }
+                
+                self.update_combined_stats(true, false).await;
+                return Some(value);
             }
-            
-            self.update_combined_stats(true, false).await;
-            return Some(value);
         }
         
         // L3: 分布式缓存 (如果可用)
@@ -227,13 +255,21 @@ impl CacheManager {
                 // 小文件：优先内存缓存
                 if self.should_cache_in_memory(data_size, 1) {
                     self.memory_cache.put(key.clone(), value.clone()).await?;
+                } else if let Some(ref disk_cache) = self.disk_cache {
+                    disk_cache.put(key.clone(), value.clone()).await?;
                 } else {
-                    self.disk_cache.put(key.clone(), value.clone()).await?;
+                    // 没有磁盘缓存，回退到内存缓存
+                    self.memory_cache.put(key.clone(), value.clone()).await?;
                 }
             }
             CacheStrategy::Chunked { chunk_size: _ } => {
                 // 大文件：磁盘缓存，热点数据可能提升到内存
-                self.disk_cache.put(key.clone(), value.clone()).await?;
+                if let Some(ref disk_cache) = self.disk_cache {
+                    disk_cache.put(key.clone(), value.clone()).await?;
+                } else {
+                    // 没有磁盘缓存，回退到内存缓存
+                    self.memory_cache.put(key.clone(), value.clone()).await?;
+                }
             }
         }
 
@@ -249,7 +285,9 @@ impl CacheManager {
     pub async fn invalidate(&self, key: &CacheKey) -> VDFSResult<()> {
         // 从所有层级移除
         let _ = self.memory_cache.invalidate(key).await;
-        let _ = self.disk_cache.invalidate(key).await;
+        if let Some(ref disk_cache) = self.disk_cache {
+            let _ = disk_cache.invalidate(key).await;
+        }
         
         if let Some(distributed) = &self.distributed_cache {
             distributed.invalidate(key).await?;
@@ -261,7 +299,9 @@ impl CacheManager {
     /// 清空缓存
     pub async fn clear(&self) -> VDFSResult<()> {
         self.memory_cache.clear().await?;
-        self.disk_cache.clear().await?;
+        if let Some(ref disk_cache) = self.disk_cache {
+            disk_cache.clear().await?;
+        }
         
         // 重置统计
         *self.combined_stats.lock().await = CacheStats::new();
@@ -272,7 +312,11 @@ impl CacheManager {
     /// 获取合并的统计信息
     pub async fn get_stats(&self) -> CacheStats {
         let memory_stats = self.memory_cache.get_stats().await;
-        let disk_stats = self.disk_cache.get_stats().await;
+        let disk_stats = if let Some(ref disk_cache) = self.disk_cache {
+            disk_cache.get_stats().await
+        } else {
+            CacheStats::new()
+        };
         
         let mut combined = self.combined_stats.lock().await;
         
@@ -303,11 +347,15 @@ impl CacheManager {
 
     /// 手动触发 Write-back
     pub async fn flush(&self) -> VDFSResult<()> {
-        Self::execute_writeback(
-            &self.memory_cache,
-            &self.disk_cache,
-            &self.writeback_config,
-        ).await
+        if let Some(ref disk_cache) = self.disk_cache {
+            Self::execute_writeback(
+                &self.memory_cache,
+                disk_cache,
+                &self.writeback_config,
+            ).await
+        } else {
+            Ok(())
+        }
     }
 
     /// 关闭缓存管理器
@@ -326,10 +374,15 @@ impl CacheManager {
     /// 健康检查
     pub async fn health_check(&self) -> CacheHealthStatus {
         let stats = self.get_stats().await;
+        let disk_capacity = if let Some(ref disk_cache) = self.disk_cache {
+            disk_cache.capacity().await as f64
+        } else {
+            1.0 // 避免除零
+        };
         
         CacheHealthStatus {
             memory_usage_ratio: stats.memory_size as f64 / self.memory_cache.capacity().await as f64,
-            disk_usage_ratio: stats.disk_size as f64 / self.disk_cache.capacity().await as f64,
+            disk_usage_ratio: stats.disk_size as f64 / disk_capacity,
             hit_rate: stats.hit_rate,
             dirty_ratio: stats.dirty_entries as f64 / (stats.size as f64 + 1.0),
             healthy: (stats.hits + stats.misses == 0 || stats.hit_rate > 0.1) && 

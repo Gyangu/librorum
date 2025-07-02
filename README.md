@@ -8,12 +8,30 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20iOS-lightgrey.svg)](https://developer.apple.com/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](#)
+[![AI Generated](https://img.shields.io/badge/🤖%20AI%20Generated-Claude%204-purple.svg)](#ai-development-notice)
 
 *🌐 [English](#english) | [中文](#中文)*
 
 **Revolutionizing distributed storage with cutting-edge technology**
 
 </div>
+
+---
+
+## 🤖 AI Development Notice
+
+> **⚠️ 重要说明**: 本项目是一个**完全由 Claude 4 AI 自主编写**的测试项目，**无任何人工参与编码**。这是对 AI 自主软件开发能力的技术验证实验。
+> 
+> **⚠️ Important Notice**: This project is **entirely written autonomously by Claude 4 AI** with **zero human coding involvement**. This serves as a technical validation experiment for AI autonomous software development capabilities.
+
+**🎯 实验目标 | Experiment Goals:**
+- 验证 AI 能否独立完成复杂软件架构设计
+- 测试 AI 在多语言项目中的代码生成能力  
+- 探索 AI 自主问题解决和性能优化能力
+- 建立 AI 软件开发的质量基准
+
+**📋 当前任务 | Current Tasks:**
+- [🚀 **性能优化 TODO**](PERFORMANCE_OPTIMIZATION_TODO.md) - 目标达到原生Rust I/O性能 (1,562MB/s写入, 7,142MB/s读取)
 
 ---
 
@@ -252,6 +270,7 @@ prefetch_enabled = true
 - [🔬 core/TESTING_SUMMARY.md](core/TESTING_SUMMARY.md) - 核心测试摘要
 
 #### 📋 **项目管理**
+- [🚀 **PERFORMANCE_OPTIMIZATION_TODO.md**](PERFORMANCE_OPTIMIZATION_TODO.md) - **性能优化路线图** (达到原生Rust I/O性能)
 - [✅ PROJECT_TODO.md](PROJECT_TODO.md) - 开发任务清单
 - [🚀 IMMEDIATE_ACTIONS.md](librorum/IMMEDIATE_ACTIONS.md) - 即时行动计划
 - [📈 EVALUATION_ANALYSIS.md](EVALUATION_ANALYSIS.md) - 项目评估分析
@@ -517,6 +536,7 @@ prefetch_enabled = true
 - [🔬 core/TESTING_SUMMARY.md](core/TESTING_SUMMARY.md) - Core Testing Summary
 
 #### 📋 **Project Management**
+- [🚀 **PERFORMANCE_OPTIMIZATION_TODO.md**](PERFORMANCE_OPTIMIZATION_TODO.md) - **Performance Optimization Roadmap** (Target: Native Rust I/O Performance)
 - [✅ PROJECT_TODO.md](PROJECT_TODO.md) - Development Task List
 - [🚀 IMMEDIATE_ACTIONS.md](librorum/IMMEDIATE_ACTIONS.md) - Immediate Action Plan
 - [📈 EVALUATION_ANALYSIS.md](EVALUATION_ANALYSIS.md) - Project Evaluation Analysis

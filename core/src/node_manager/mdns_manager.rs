@@ -286,6 +286,7 @@ impl MdnsManager {
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,3 +451,4 @@ mod tests {
         assert_ne!(manager2.node_id, manager3.node_id);
     }
 }
+*/

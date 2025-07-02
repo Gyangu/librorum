@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
@@ -20,10 +21,14 @@ mod tests;
 #[cfg(test)]
 mod comprehensive_tests;
 
+#[cfg(test)]
+mod integration_test;
+
 // Re-export core types for convenience
-pub use filesystem::{VirtualFileSystem, FileHandle, FileOperations, FileMetadata};
-pub use storage::{StorageBackend, ChunkManager};
-// Internal imports for VDFS construction
+pub use filesystem::{VirtualFileSystem, FileHandle, FileOperations, FileMetadata, VirtualFileSystemImpl};
+pub use storage::{StorageBackend, ChunkManager, LocalStorageBackend, DefaultChunkManager};
+pub use metadata::{MetadataManager, DefaultMetadataManager, SledMetadataManager, SimpleMetadataManager};
+pub use cache::{CacheManager, MemoryCache, DiskCache, CachePolicy};
 
 /// Result type for VDFS operations
 pub type VDFSResult<T> = Result<T, VDFSError>;
@@ -38,7 +43,7 @@ pub type ChunkId = [u8; 32];
 pub type NodeId = String;
 
 /// Virtual path representation
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct VirtualPath(String);
 
 impl VirtualPath {
@@ -210,7 +215,7 @@ pub struct StorageInfo {
 }
 
 /// Cache key for caching operations
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CacheKey {
     FileMetadata(VirtualPath),
     FileData(FileId),
@@ -274,7 +279,7 @@ pub enum VDFSError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VDFSConfig {
     /// Root directory for local storage
-    pub storage_root: PathBuf,
+    pub storage_path: PathBuf,
     
     /// Default chunk size in bytes
     pub chunk_size: usize,
@@ -282,8 +287,11 @@ pub struct VDFSConfig {
     /// Enable compression
     pub enable_compression: bool,
     
-    /// Cache configuration
-    pub cache_config: CacheConfig,
+    /// Memory cache size in bytes
+    pub cache_memory_size: usize,
+    
+    /// Disk cache size in bytes  
+    pub cache_disk_size: usize,
     
     /// Replication factor
     pub replication_factor: usize,
@@ -295,53 +303,86 @@ pub struct VDFSConfig {
 impl Default for VDFSConfig {
     fn default() -> Self {
         Self {
-            storage_root: PathBuf::from("./vdfs_storage"),
-            chunk_size: 1024 * 1024, // 1MB
+            storage_path: PathBuf::from("./vdfs_storage"),
+            chunk_size: 8 * 1024 * 1024, // 8MB - 更大的chunk减少协议开销
             enable_compression: false,
-            cache_config: CacheConfig::default(),
+            cache_memory_size: 64 * 1024 * 1024, // 64MB
+            cache_disk_size: 512 * 1024 * 1024, // 512MB
             replication_factor: 3,
             network_timeout: Duration::from_secs(30),
         }
     }
 }
 
-/// Cache configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CacheConfig {
-    /// Maximum cache size in bytes
-    pub max_size: usize,
-    
-    /// Time-to-live for cache entries
-    pub ttl: Duration,
-    
-    /// Enable distributed cache
-    pub enable_distributed: bool,
-}
-
-impl Default for CacheConfig {
-    fn default() -> Self {
-        Self {
-            max_size: 100 * 1024 * 1024, // 100MB
-            ttl: Duration::from_secs(3600), // 1 hour
-            enable_distributed: false,
-        }
-    }
-}
 
 /// Main VDFS instance
 pub struct VDFS {
-    _config: VDFSConfig,
+    config: VDFSConfig,
     filesystem: Box<dyn VirtualFileSystem>,
     storage: Box<dyn StorageBackend>,
-    // metadata: Box<dyn MetadataManager>, // TODO: implement when ready
-    // cache: CacheManager, // TODO: implement when ready
+    metadata: Box<dyn MetadataManager>,
+    cache: CacheManager,
 }
 
 impl VDFS {
-    /// Create a new VDFS instance
-    pub fn new(_config: VDFSConfig) -> VDFSResult<Self> {
-        // This will be implemented when we have the component implementations
-        Err(VDFSError::InternalError("VDFS construction not yet implemented".to_string()))
+    /// Create a new VDFS instance with default components
+    pub async fn new(config: VDFSConfig) -> VDFSResult<Self> {
+        // Create storage backend
+        let node_id = format!("node-{}", uuid::Uuid::new_v4());
+        let storage_for_fs = Arc::new(LocalStorageBackend::new(config.storage_path.clone(), node_id.clone())?);
+        let storage_for_vdfs = LocalStorageBackend::new(config.storage_path.clone(), node_id)?;
+        
+        // Create metadata manager (using simple in-memory manager to avoid Sled compression issues)
+        let metadata_for_fs = Arc::new(SimpleMetadataManager::new());
+        let metadata_for_vdfs = SimpleMetadataManager::new();
+        
+        // Create cache components (simplified to avoid dependency conflicts)
+        let memory_config = cache::memory_cache::MemoryCacheConfig {
+            max_memory: config.cache_memory_size,
+            ..Default::default()
+        };
+        let memory_cache = MemoryCache::new(memory_config);
+        
+        // Skip disk cache for now to avoid compression dependency conflicts
+        let cache_policy = CachePolicy::default();
+        
+        // Create cache manager with memory cache only
+        let cache = CacheManager::new_memory_only(
+            memory_cache,
+            cache_policy,
+        ).await?;
+        
+        // Create virtual file system
+        let filesystem = Box::new(VirtualFileSystemImpl::new(
+            storage_for_fs as Arc<dyn StorageBackend>,
+            metadata_for_fs as Arc<dyn MetadataManager>,
+            config.chunk_size,
+        ));
+        
+        Ok(Self {
+            config,
+            filesystem,
+            storage: Box::new(storage_for_vdfs),
+            metadata: Box::new(metadata_for_vdfs),
+            cache,
+        })
+    }
+    
+    /// Create a new VDFS instance with custom components
+    pub fn with_components(
+        config: VDFSConfig,
+        filesystem: Box<dyn VirtualFileSystem>,
+        storage: Box<dyn StorageBackend>, 
+        metadata: Box<dyn MetadataManager>,
+        cache: CacheManager,
+    ) -> Self {
+        Self {
+            config,
+            filesystem,
+            storage,
+            metadata,
+            cache,
+        }
     }
     
     /// Mount the file system
@@ -418,6 +459,16 @@ impl VDFS {
     pub async fn create_dir(&self, path: &str) -> VDFSResult<()> {
         let vpath = VirtualPath::new(path);
         self.filesystem.create_dir(&vpath).await
+    }
+    
+    /// Create a directory (alias for create_dir)
+    pub async fn create_directory(&self, path: &str) -> VDFSResult<()> {
+        self.create_dir(path).await
+    }
+    
+    /// List directory contents (alias for list_dir)
+    pub async fn list_directory(&self, path: &str) -> VDFSResult<Vec<DirEntry>> {
+        self.list_dir(path).await
     }
     
     /// Get file metadata

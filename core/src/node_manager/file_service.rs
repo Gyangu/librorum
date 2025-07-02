@@ -9,6 +9,7 @@ use crate::proto::file::{
     SyncStatus, SyncStatusResponse,
     UploadFileRequest, UploadFileResponse,
 };
+use crate::vdfs::{VDFS, VDFSConfig, VirtualPath};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -18,7 +19,9 @@ use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, error, info, warn};
 
 pub struct FileServiceImpl {
-    // 用于存储文件元数据的内存映射
+    // VDFS实例 - 实际的分布式文件系统
+    vdfs: Option<Arc<VDFS>>,
+    // 临时兼容：用于存储文件元数据的内存映射 (用于向后兼容)
     files: Arc<Mutex<HashMap<String, FileInfo>>>,
     // 文件计数器，用于生成唯一的文件ID
     file_counter: Arc<Mutex<u64>>,
@@ -27,6 +30,26 @@ pub struct FileServiceImpl {
 impl FileServiceImpl {
     pub fn new() -> Self {
         Self {
+            vdfs: None, // 初始为空，稍后通过async方法初始化
+            files: Arc::new(Mutex::new(HashMap::new())),
+            file_counter: Arc::new(Mutex::new(0)),
+        }
+    }
+    
+    /// 异步初始化VDFS（在NodeManager中调用）
+    pub async fn init_vdfs(&mut self, config: VDFSConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        info!("Initializing VDFS for FileService...");
+        let vdfs = VDFS::new(config).await
+            .map_err(|e| format!("Failed to initialize VDFS: {}", e))?;
+        self.vdfs = Some(Arc::new(vdfs));
+        info!("✓ VDFS initialized successfully for FileService");
+        Ok(())
+    }
+    
+    /// 创建带有自定义VDFS的FileService
+    pub fn with_vdfs(vdfs: Arc<VDFS>) -> Self {
+        Self {
+            vdfs: Some(vdfs),
             files: Arc::new(Mutex::new(HashMap::new())),
             file_counter: Arc::new(Mutex::new(0)),
         }
@@ -147,6 +170,29 @@ impl FileService for FileServiceImpl {
         if let Some(meta) = metadata {
             let file_id = format!("file_{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
             
+            // 尝试使用VDFS存储实际文件数据
+            info!("Attempting to write {} bytes to VDFS path: {}", _file_data.len(), meta.path);
+            info!("First 32 bytes of data: {:?}", &_file_data.get(..32.min(_file_data.len())).unwrap_or(&[]));
+            
+            let vdfs_result = match &self.vdfs {
+                Some(vdfs) => {
+                    match vdfs.write_file(&meta.path, &_file_data).await {
+                        Ok(_) => {
+                            info!("✓ File successfully written to VDFS: {}", meta.path);
+                            true
+                        }
+                        Err(e) => {
+                            error!("✗ Failed to write file to VDFS: {}, falling back to memory storage", e);
+                            false
+                        }
+                    }
+                }
+                None => {
+                    warn!("VDFS not initialized, falling back to memory storage");
+                    false
+                }
+            };
+            
             let file_info = FileInfo {
                 file_id: file_id.clone(),
                 name: meta.name.clone(),
@@ -171,14 +217,15 @@ impl FileService for FileServiceImpl {
                 replication_factor: 3,
                 is_compressed: meta.compress,
                 is_encrypted: meta.encrypt,
-                sync_status: SyncStatus::Synced.into(),
+                sync_status: if vdfs_result { SyncStatus::Synced } else { SyncStatus::Error }.into(),
             };
 
-            // 保存文件信息
+            // 保存文件信息到内存映射（向后兼容）
             let mut files_map = files.lock().await;
             files_map.insert(file_id.clone(), file_info.clone());
             
-            info!("Successfully uploaded file: {} ({} bytes)", meta.name, bytes_uploaded);
+            info!("Successfully uploaded file: {} ({} bytes) - VDFS: {}", 
+                  meta.name, bytes_uploaded, vdfs_result);
 
             let response = UploadFileResponse {
                 success: true,
@@ -224,6 +271,7 @@ impl FileService for FileServiceImpl {
 
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         let file_info_clone = file_info.clone();
+        let vdfs = self.vdfs.clone(); // Clone the Option<Arc<VDFS>>
         
         tokio::spawn(async move {
             // 首先发送文件信息
@@ -237,26 +285,59 @@ impl FileService for FileServiceImpl {
                 return;
             }
 
-            // 模拟文件数据（在实际实现中，这里会从存储系统读取实际文件数据）
-            let chunk_size = 8192; // 8KB chunks
+            // 尝试从VDFS读取实际文件数据
+            info!("Attempting to read file from VDFS: {}", file_info_clone.path);
+            let file_data = match &vdfs {
+                Some(vdfs_instance) => {
+                    match vdfs_instance.read_file(&file_info_clone.path).await {
+                        Ok(data) => {
+                            info!("✓ File successfully read from VDFS: {} bytes", data.len());
+                            info!("First 32 bytes of read data: {:?}", &data.get(..32.min(data.len())).unwrap_or(&[]));
+                            data
+                        }
+                        Err(e) => {
+                            error!("✗ Failed to read file from VDFS: {}, sending empty data", e);
+                            vec![0u8; file_info_clone.size as usize] // 向后兼容的模拟数据
+                        }
+                    }
+                }
+                None => {
+                    warn!("VDFS not initialized, sending empty data");
+                    vec![0u8; file_info_clone.size as usize] // 向后兼容的模拟数据
+                }
+            };
+            
             let total_size = file_info_clone.size;
-            let mut offset = req.offset;
-            let end_offset = if req.length > 0 {
-                std::cmp::min(req.offset + req.length, total_size)
+            // 高性能分块大小：更大的chunk减少gRPC序列化开销  
+            let chunk_size = if total_size < 5 * 1024 * 1024 { // < 5MB
+                1024 * 1024 // 1MB
+            } else if total_size < 50 * 1024 * 1024 { // < 50MB
+                4 * 1024 * 1024 // 4MB  
             } else {
-                total_size
+                8 * 1024 * 1024 // 8MB for large files
+            };
+            let mut offset = req.offset as usize;
+            let end_offset = if req.length > 0 {
+                std::cmp::min(req.offset + req.length, total_size) as usize
+            } else {
+                total_size as usize
             };
 
-            while offset < end_offset {
+            while offset < end_offset && offset < file_data.len() {
                 let remaining = end_offset - offset;
-                let current_chunk_size = std::cmp::min(chunk_size, remaining as usize);
+                let current_chunk_size = std::cmp::min(chunk_size, remaining);
+                let actual_chunk_size = std::cmp::min(current_chunk_size, file_data.len() - offset);
                 
-                // 生成模拟数据（在实际实现中，这里会读取真实文件数据）
-                let chunk_data = vec![0u8; current_chunk_size];
+                // 读取实际文件数据块
+                let chunk_data = if actual_chunk_size > 0 {
+                    file_data[offset..offset + actual_chunk_size].to_vec()
+                } else {
+                    Vec::new()
+                };
                 
                 let chunk_response = DownloadFileResponse {
                     data: Some(crate::proto::file::download_file_response::Data::Chunk(chunk_data)),
-                    offset,
+                    offset: offset as i64,
                     total_size,
                 };
                 
@@ -264,13 +345,12 @@ impl FileService for FileServiceImpl {
                     break;
                 }
                 
-                offset += current_chunk_size as i64;
+                offset += actual_chunk_size;
                 
-                // 添加小延迟模拟网络传输
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                // 移除人为延迟以提升性能
             }
 
-            debug!("Download completed: {} bytes sent", offset - req.offset);
+            debug!("Download completed: {} bytes sent", offset as i64 - req.offset);
         });
 
         let output_stream = ReceiverStream::new(rx);

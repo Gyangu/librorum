@@ -1,7 +1,7 @@
 // 将main.rs中的核心功能提取到lib.rs，便于测试
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use librorum_shared::{NodeConfig, proto::node::node_service_client::NodeServiceClient};
+use librorum_shared::{NodeConfig, proto::node::node_service_client::NodeServiceClient, proto::file::file_service_client::FileServiceClient};
 use std::path::PathBuf;
 use tonic::transport::Channel;
 
@@ -89,12 +89,114 @@ pub enum Command {
 
     /// 列出可用节点
     ListNodes,
+
+    /// 文件操作命令
+    /// 上传文件到分布式文件系统
+    Upload {
+        /// 本地文件路径
+        #[clap(short, long)]
+        file: PathBuf,
+        
+        /// 远程存储路径 (可选，默认使用文件名)
+        #[clap(short, long)]
+        path: Option<String>,
+        
+        /// 是否覆盖现有文件
+        #[clap(long)]
+        overwrite: bool,
+        
+        /// 是否压缩文件
+        #[clap(long)]
+        compress: bool,
+    },
+
+    /// 下载文件从分布式文件系统
+    Download {
+        /// 远程文件路径或文件ID
+        #[clap(short, long)]
+        remote: String,
+        
+        /// 本地保存路径 (可选，默认使用远程文件名)
+        #[clap(short, long)]
+        output: Option<PathBuf>,
+        
+        /// 下载偏移量 (用于断点续传)
+        #[clap(long, default_value = "0")]
+        offset: u64,
+        
+        /// 下载长度 (0表示全部)
+        #[clap(long, default_value = "0")]
+        length: u64,
+    },
+
+    /// 列出远程目录中的文件
+    List {
+        /// 远程目录路径
+        #[clap(default_value = "/")]
+        path: String,
+        
+        /// 是否递归列出子目录
+        #[clap(short, long)]
+        recursive: bool,
+        
+        /// 是否包含隐藏文件
+        #[clap(short = 'a', long)]
+        all: bool,
+    },
+
+    /// 删除远程文件或目录
+    Remove {
+        /// 远程文件/目录路径
+        path: String,
+        
+        /// 是否递归删除目录
+        #[clap(short, long)]
+        recursive: bool,
+        
+        /// 是否强制删除
+        #[clap(short, long)]
+        force: bool,
+    },
+
+    /// 创建远程目录
+    Mkdir {
+        /// 远程目录路径
+        path: String,
+        
+        /// 是否创建父目录
+        #[clap(short, long)]
+        parents: bool,
+    },
+
+    /// 获取文件信息
+    Info {
+        /// 远程文件路径或文件ID
+        path: String,
+        
+        /// 是否包含分块信息
+        #[clap(long)]
+        chunks: bool,
+    },
+
+    /// 获取同步状态
+    Sync {
+        /// 路径 (可选，空表示全局状态)
+        #[clap(short, long)]
+        path: Option<String>,
+    },
 }
 
 /// 尝试连接到core服务
 pub async fn try_connect_to_core(server: &str) -> Result<NodeServiceClient<Channel>> {
     let client = NodeServiceClient::connect(server.to_string()).await
         .with_context(|| format!("无法连接到core服务: {}", server))?;
+    Ok(client)
+}
+
+/// 尝试连接到文件服务
+pub async fn try_connect_to_file_service(server: &str) -> Result<FileServiceClient<Channel>> {
+    let client = FileServiceClient::connect(server.to_string()).await
+        .with_context(|| format!("无法连接到文件服务: {}", server))?;
     Ok(client)
 }
 

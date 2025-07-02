@@ -127,13 +127,8 @@ impl DiskCache {
             .cache_capacity(64 * 1024 * 1024)  // 64MB 缓存
             .flush_every_ms(Some(5000));        // 5秒刷盘
         
-        // 仅在启用压缩特性时使用压缩
-        #[cfg(feature = "compression")]
-        {
-            sled_config = sled_config
-                .compression_factor(config.compression_level as i32)
-                .use_compression(config.compression_level > 0);
-        }
+        // 不使用压缩避免依赖冲突
+        // 注释掉压缩配置以避免zstd依赖冲突
 
         let db = sled_config.open()
             .map_err(|e| VDFSError::StorageError(format!("Failed to open disk cache: {}", e)))?;
@@ -173,22 +168,14 @@ impl DiskCache {
         let serialized = bincode::serialize(&disk_entry)
             .map_err(|e| VDFSError::SerializationError(format!("Failed to serialize cache entry: {}", e)))?;
 
-        // 如果启用压缩
-        if self.config.compression_level > 0 {
-            self.compress_data(&serialized)
-        } else {
-            Ok(serialized)
-        }
+        // 不使用压缩避免依赖冲突
+        Ok(serialized)
     }
 
     /// 反序列化缓存值
     fn deserialize_value(&self, key: CacheKey, data: &[u8]) -> VDFSResult<CacheEntry> {
-        // 如果启用压缩，先解压
-        let decompressed = if self.config.compression_level > 0 {
-            self.decompress_data(data)?
-        } else {
-            data.to_vec()
-        };
+        // 不使用压缩避免依赖冲突
+        let decompressed = data.to_vec();
 
         let disk_entry: DiskCacheEntry = bincode::deserialize(&decompressed)
             .map_err(|e| VDFSError::SerializationError(format!("Failed to deserialize cache entry: {}", e)))?;

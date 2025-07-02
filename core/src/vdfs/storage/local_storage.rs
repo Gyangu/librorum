@@ -154,8 +154,11 @@ impl StorageBackend for LocalStorageBackend {
         
         // Atomically rename to final location
         fs::rename(&temp_path, &chunk_path).await.map_err(|e| {
-            // Clean up temp file on error
-            let _ = std::fs::remove_file(&temp_path);
+            // Clean up temp file on error - use async cleanup
+            let temp_path_clone = temp_path.clone();
+            tokio::spawn(async move {
+                let _ = fs::remove_file(&temp_path_clone).await;
+            });
             VDFSError::StorageError(format!("Failed to finalize chunk: {}", e))
         })?;
         
@@ -208,9 +211,18 @@ impl StorageBackend for LocalStorageBackend {
     }
     
     async fn store_chunks(&self, chunks: Vec<(ChunkId, Vec<u8>)>) -> VDFSResult<()> {
-        // Store chunks sequentially to avoid lifetime issues
-        for (chunk_id, data) in chunks {
-            self.store_chunk(chunk_id, &data).await?;
+        // Store chunks in parallel for high performance
+        let futures: Vec<_> = chunks.into_iter()
+            .map(|(chunk_id, data)| {
+                let self_ref = self;
+                async move { self_ref.store_chunk(chunk_id, &data).await }
+            })
+            .collect();
+        
+        // Execute all stores in parallel and collect any errors
+        let results = futures::future::join_all(futures).await;
+        for result in results {
+            result?; // Return first error if any
         }
         
         Ok(())
