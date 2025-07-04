@@ -1,0 +1,61 @@
+[package]
+name = "aeron_bench"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aeron-rs = "0.1.8"
+tokio = { workspace = true, features = ["full"] }
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0"
+rand = "0.8"
+bytes = "1.4"
+
+[[bin]]
+name = "simple_test"
+path = "src/simple_test.rs"
+
+[[bin]]
+name = "grpc_baseline"
+path = "src/grpc_baseline.rs"
+
+[[bin]]
+name = "ipc_performance"
+path = "src/ipc_performance.rs"
+
+[[bin]]
+name = "aeron_rust_receiver"
+path = "src/aeron_rust_receiver.rs"
+
+[[bin]]
+name = "reliable_aeron_receiver"
+path = "src/reliable_aeron_receiver.rs"
+
+[[bin]]
+name = "reliable_aeron_sender"
+path = "src/reliable_aeron_sender.rs"
+
+[[bin]]
+name = "aeron_swift_compatible"
+path = "src/aeron_swift_compatible.rs"
+
+[[bin]]
+name = "simple_udp_aeron_receiver"
+path = "src/simple_udp_aeron_receiver.rs"
+
+[[bin]]
+name = "simple_udp_aeron_sender"
+path = "src/simple_udp_aeron_sender.rs"
+
+[[bin]]
+name = "bidirectional_aeron_rust"
+path = "src/bidirectional_aeron_rust.rs"
+
+[[bin]]
+name = "ipc_aeron_receiver"
+path = "src/ipc_aeron_receiver.rs"
+
+[[bin]]
+name = "rust_ipc_sender"
+path = "src/rust_ipc_sender.rs"
