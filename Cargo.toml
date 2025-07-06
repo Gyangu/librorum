@@ -25,6 +25,21 @@ tracing = "0.1.40"
 serde = { version = "1.0.195", features = ["derive"] }
 toml = "0.5.11"
 clap = { version = "4.4.16", features = ["derive"] }
+async-trait = "0.1.88"
+bytes = "1.4.0"
+futures = "0.3.31"
+uuid = { version = "1.16.0", features = ["v4"] }
+cfg-if = "1.0"
+serde_json = "1.0.140"
+hostname = "0.3.1"
+bincode = "1.3.3"
+crc32fast = "1.3"
+rmp-serde = "1.3.0"
+lz4 = "1.28.1"
+nix = { version = "0.27.1", features = ["mman", "fs"] }
+memmap2 = "0.9.5"
+winapi = { version = "0.3", features = ["winbase", "winnt", "memoryapi"] }
+libc = "0.2"
 
 [profile.release]
 opt-level = 3
