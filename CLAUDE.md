@@ -10,6 +10,39 @@ Librorum is a distributed file system with a **three-folder architecture**:
 - **CLI Client** (`/cli/`): Command-line client that connects to daemon via gRPC
 - **Swift Client** (`/client/`): Cross-platform SwiftUI application for macOS and iOS
 
+## Git Repository Structure
+
+### 🔗 Multiple Repository Setup:
+This project consists of **two separate Git repositories**:
+
+1. **Main Repository**: `/Users/gy/librorum/`
+   - Remote: `https://github.com/Gyangu/librorum.git`
+   - Contains: Core distributed file system components (shared, core, cli, client)
+   
+2. **Transport Protocol Repository**: `/Users/gy/librorum/universal-transport/`
+   - Remote: `https://github.com/Gyangu/universal-transport.git`
+   - Contains: Data Portal high-performance transport protocol implementation
+   - **This is an independent repository**, NOT a git submodule
+
+### 🔧 Development Workflow:
+```bash
+# Working with main librorum repository
+git add . && git commit -m "Update librorum code"
+git push origin main
+
+# Working with transport protocol (must cd first)
+cd universal-transport/
+git add . && git commit -m "Update transport protocol"
+git push origin main
+cd ..
+```
+
+### ⚠️ Important Notes:
+- **Always check which repository you're in** before committing
+- Changes to `universal-transport/` require separate commits to its own repository
+- The librorum project imports and uses universal-transport as a local dependency
+- Both repositories must be managed independently
+
 ## Build Commands
 
 ### Three-Folder Architecture

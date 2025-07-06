@@ -168,6 +168,17 @@ pub enum HybridEvent {
     },
 }
 
+impl Clone for HybridTransferCoordinator {
+    fn clone(&self) -> Self {
+        Self {
+            sessions: Arc::clone(&self.sessions),
+            utp_server: None, // UTP服务器不能被克隆，新实例需要重新初始化
+            utp_clients: Arc::clone(&self.utp_clients),
+            event_handlers: Arc::clone(&self.event_handlers),
+        }
+    }
+}
+
 impl HybridTransferCoordinator {
     /// 创建新的混合传输协调器
     pub fn new() -> Self {

@@ -182,15 +182,11 @@ impl HybridNodeManager {
         info!("🌐 启动gRPC服务器: {}", addr);
 
         // 创建服务实例
-        let node_service = NodeServiceImpl::new(NodeInfo {
-            id: self.node_id.clone(),
-            address: self.grpc_bind_address.clone(),
-            // status: NodeStatus::Online, // 字段不存在，移除
-            system_info: self.system_info.clone(),
-            capabilities: vec!["file_storage".to_string(), "hybrid_transport".to_string()],
-            metadata: std::collections::HashMap::new(),
-            last_seen: chrono::Utc::now().timestamp(),
-        });
+        let node_service = NodeServiceImpl::new(
+            self.node_id.clone(),
+            self.grpc_bind_address.clone(),
+            self.system_info.clone()
+        );
 
         let log_service = LogServiceImpl::new();
 
@@ -228,40 +224,44 @@ impl HybridNodeManager {
 
         // 启动mDNS管理器
         tokio::spawn(async move {
-            match MdnsManager::new(&node_id, &bind_address).await {
-                Ok(mut mdns_manager) => {
-                    // 注册服务，包含UTP端口信息
-                    let mut service_txt = std::collections::HashMap::new();
-                    service_txt.insert("utp_address".to_string(), utp_address);
-                    service_txt.insert("hybrid_mode".to_string(), "enabled".to_string());
+            // 从bind_address中提取端口号
+            let port = if let Some(colon_pos) = bind_address.rfind(':') {
+                bind_address[colon_pos + 1..].parse::<u16>().unwrap_or(50051)
+            } else {
+                50051
+            };
+            
+            let mdns_manager = MdnsManager::new(node_id, port);
+            
+            // 注册服务
+            if let Err(e) = mdns_manager.register() {
+                error!("❌ mDNS服务注册失败: {}", e);
+                return;
+            }
 
-                    if let Err(e) = mdns_manager.register_service(Some(service_txt)).await {
-                        error!("❌ mDNS服务注册失败: {}", e);
-                        return;
-                    }
-
-                    // 持续监听服务发现
-                    loop {
-                        match mdns_manager.discover_services().await {
-                            Ok(services) => {
-                                if !services.is_empty() {
-                                    debug!("🔍 发现 {} 个服务", services.len());
-                                    let mut nodes = discovered_nodes.lock().unwrap();
-                                    nodes.clear();
-                                    nodes.extend(services);
-                                }
-                            }
-                            Err(e) => {
-                                warn!("⚠️ 服务发现失败: {}", e);
-                            }
-                        }
-
-                        tokio::time::sleep(Duration::from_secs(30)).await;
-                    }
+            // 启动服务发现
+            let discovered_nodes_clone = discovered_nodes.clone();
+            let discovered_callback = move |service_name: String, address: String, port: u16| {
+                debug!("🔍 发现服务: {} at {}:{}", service_name, address, port);
+                let mut nodes = discovered_nodes_clone.lock().unwrap();
+                let service_addr = format!("{}:{}", address, port);
+                if !nodes.contains(&service_addr) {
+                    nodes.push(service_addr);
                 }
-                Err(e) => {
-                    error!("❌ mDNS管理器启动失败: {}", e);
-                }
+            };
+            
+            let removed_callback = move |service_name: String| {
+                debug!("❌ 服务移除: {}", service_name);
+            };
+
+            if let Err(e) = mdns_manager.start_discovery(discovered_callback, removed_callback).await {
+                error!("❌ mDNS服务发现启动失败: {}", e);
+                return;
+            }
+
+            // 保持服务发现运行
+            loop {
+                tokio::time::sleep(Duration::from_secs(30)).await;
             }
         });
 
@@ -287,34 +287,30 @@ impl HybridNodeManager {
                 // 检查已知节点的健康状态
                 let nodes = known_nodes.lock().await.clone();
                 for node_address in nodes {
-                    match NodeClient::new(&node_address).await {
-                        Ok(mut client) => {
-                            match client.get_health().await {
-                                Ok(health) => {
-                                    // 简化实现：跳过健康状态更新
-                                    debug!("更新节点健康状态: {} {:?}", node_address, health);
-                                    debug!("💗 节点健康检查成功: {}", node_address);
-                                }
-                                Err(e) => {
-                                    let offline_health = NodeHealth {
-                                        node_id: node_address.clone(),
-                                        status: NodeStatus::Offline,
-                                        last_heartbeat: chrono::Utc::now(),
-                                        cpu_usage: 0.0,
-                                        memory_usage: 0.0,
-                                        disk_usage: 0.0,
-                                        network_latency: None,
-                                        uptime: 0,
-                                        error_message: Some(format!("健康检查失败: {}", e)),
-                                    };
-                                    // 简化实现：跳过健康状态更新  
-                                    debug!("节点离线: {} {:?}", node_address, offline_health);
-                                    warn!("⚠️ 节点健康检查失败: {} - {}", node_address, e);
-                                }
-                            }
+                    let client = NodeClient::new(
+                        format!("unknown_{}", node_address),
+                        node_address.clone(),
+                        "unknown".to_string()
+                    );
+                    match client.send_heartbeat(&node_address).await {
+                        Ok(response) => {
+                            // 简化实现：跳过健康状态更新
+                            debug!("心跳响应: {} {:?}", node_address, response);
+                            debug!("💗 节点健康检查成功: {}", node_address);
                         }
                         Err(e) => {
-                            warn!("⚠️ 无法连接到节点: {} - {}", node_address, e);
+                            let offline_health = NodeHealth {
+                                node_id: node_address.clone(),
+                                address: node_address.clone(),
+                                system_info: "unknown".to_string(),
+                                last_heartbeat: chrono::Utc::now(),
+                                failure_count: 1,
+                                status: NodeStatus::Offline,
+                                latency_ms: None,
+                            };
+                            // 简化实现：跳过健康状态更新  
+                            debug!("节点离线: {} {:?}", node_address, offline_health);
+                            warn!("⚠️ 节点健康检查失败: {} - {}", node_address, e);
                         }
                     }
                 }

@@ -4,8 +4,7 @@ members = [
     "core", 
     "cli",
     "examples/tklog_test", 
-    "examples/mdns_test",
-    "aeron_bench"
+    "examples/mdns_test"
 ]
 resolver = "2"
 

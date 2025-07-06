@@ -396,3 +396,16 @@ impl Default for SimpleHybridFileService {
         Self::new("127.0.0.1:9090".parse().unwrap())
     }
 }
+
+// 为SimpleHybridFileService实现Clone以支持Service trait
+impl Clone for SimpleHybridFileService {
+    fn clone(&self) -> Self {
+        Self {
+            files: Arc::clone(&self.files),
+            file_counter: Arc::clone(&self.file_counter),
+            hybrid_coordinator: self.hybrid_coordinator.clone(),
+            utp_server_addr: self.utp_server_addr,
+            hybrid_enabled: self.hybrid_enabled,
+        }
+    }
+}
