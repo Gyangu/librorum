@@ -1,0 +1,36 @@
+[package]
+name = "universal-transport-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core transport engine for Universal Transport Protocol"
+license = "MIT"
+repository = "https://github.com/Gyangu/universal-transport"
+
+[dependencies]
+# Workspace dependencies
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+cfg-if = { workspace = true }
+serde_json = { workspace = true }
+hostname = { workspace = true }
+bincode = { workspace = true }
+crc32fast = { workspace = true }
+
+# Note: Core module should not depend on implementation modules
+# Implementation modules (shared-memory, network) depend on core instead
+
+[dev-dependencies]
+tokio-test = "0.4"
+tracing-test = "0.2"
+
+[features]
+default = ["shared-memory", "network"]
+shared-memory = []
+network = []

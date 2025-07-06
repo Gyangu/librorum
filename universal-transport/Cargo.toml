@@ -1,0 +1,114 @@
+[workspace]
+members = [
+    "rust/core",
+    "rust/shared-memory", 
+    "rust/network"
+]
+resolver = "2"
+
+[package]
+name = "universal-transport"
+version = "0.1.0"
+edition = "2021"
+description = "Universal Transport Protocol for cross-language communication"
+license = "MIT"
+repository = "https://github.com/Gyangu/universal-transport"
+
+[[example]]
+name = "simple_rust_demo"
+path = "examples/simple_rust_demo.rs"
+
+[[example]]
+name = "rust_service"
+path = "examples/rust_service.rs"
+
+[[example]]
+name = "rust_rust_benchmark"
+path = "rust/examples/rust_rust_benchmark.rs"
+
+[[example]]
+name = "shared_memory_demo"
+path = "examples/shared_memory_demo.rs"
+
+[[example]]
+name = "binary_protocol_benchmark"
+path = "rust/examples/binary_protocol_benchmark.rs"
+
+[[example]]
+name = "zero_copy_benchmark"
+path = "rust/examples/zero_copy_benchmark.rs"
+
+[[example]]
+name = "cross_language_server"
+path = "rust/examples/cross_language_server.rs"
+
+[[example]]
+name = "tcp_vs_memory_benchmark"
+path = "rust/examples/tcp_vs_memory_benchmark.rs"
+
+[[example]]
+name = "posix_shm_server"
+path = "rust/examples/posix_shm_server.rs"
+
+[dependencies]
+universal-transport-core = { path = "rust/core" }
+universal-transport-shared-memory = { path = "rust/shared-memory" }
+universal-transport-network = { path = "rust/network" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+rayon = { workspace = true }
+num_cpus = { workspace = true }
+bytes = { workspace = true }
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
+rmp-serde = "1.1"  # MessagePack for Rust
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Networking
+bytes = "1.0"
+futures = "0.3"
+
+# Performance and monitoring
+tracing = "0.1"
+tracing-subscriber = "0.3"
+metrics = "0.21"
+
+# Cross-platform support
+cfg-if = "1.0"
+
+# Platform-specific dependencies (moved to individual crates)
+nix = "0.27"
+memmap2 = "0.9"
+winapi = { version = "0.3", features = ["winbase", "winnt", "memoryapi"] }
+
+# Utilities
+uuid = { version = "1.0", features = ["v4"] }
+crc32fast = "1.3"
+lz4 = "1.24"  # Compression
+serde_json = "1.0"
+hostname = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+rayon = "1.7"  # Parallel processing
+num_cpus = "1.0"
+libc = "0.2"
+ctrlc = "3.0"
+
+[workspace.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
