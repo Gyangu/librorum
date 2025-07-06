@@ -10,7 +10,6 @@ use tokio::sync::Mutex;
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, error, info, warn};
-use uuid::Uuid;
 
 use crate::proto::file::{
     file_service_server::FileService,
@@ -27,7 +26,6 @@ use crate::vdfs::{VDFS, VDFSConfig, VirtualPath};
 use librorum_shared::transport::hybrid::{
     HybridTransferCoordinator, HybridEvent, TransferType, SessionStatus
 };
-use librorum_shared::{UtpServer, UtpConfig, TransportMode};
 
 /// Hybrid文件服务实现
 pub struct HybridFileService {
@@ -48,7 +46,7 @@ pub struct HybridFileService {
 impl HybridFileService {
     /// 创建新的Hybrid文件服务
     pub fn new(utp_server_addr: SocketAddr) -> Self {
-        let mut coordinator = HybridTransferCoordinator::new();
+        let coordinator = HybridTransferCoordinator::new();
         
         // 设置事件处理
         coordinator.add_event_handler(|event| {
@@ -175,7 +173,7 @@ impl HybridFileService {
                 user_id, 
                 local_path, 
                 remote_path, 
-                file_info.size, 
+                file_info.size as u64, 
                 grpc_endpoint
             )
             .map_err(|e| Status::internal(format!("Failed to create download session: {}", e)))?;
@@ -201,7 +199,7 @@ impl HybridFileService {
             let request = request?;
             
             match request.data {
-                Some(crate::proto::file::upload_file_request::Data::FileInfo(info)) => {
+                Some(crate::proto::file::upload_file_request::Data::Metadata(info)) => {
                     info!("📋 接收文件信息: {} ({} bytes)", info.name, info.size);
                     file_info = Some(info);
                 }
@@ -218,10 +216,10 @@ impl HybridFileService {
         
         let file_info = file_info.ok_or_else(|| Status::invalid_argument("没有接收到文件信息"))?;
         
-        if total_size != file_info.size {
+        if total_size != file_info.size as u64 {
             return Err(Status::invalid_argument(format!(
                 "文件大小不匹配: 期望 {} bytes, 实际接收 {} bytes",
-                file_info.size, total_size
+                file_info.size as u64, total_size
             )));
         }
         
@@ -261,7 +259,7 @@ impl HybridFileService {
     async fn handle_traditional_download(
         &self,
         request: Request<DownloadFileRequest>,
-    ) -> Result<Response<Self::DownloadFileStream>, Status> {
+    ) -> Result<Response<<Self as FileService>::DownloadFileStream>, Status> {
         let req = request.into_inner();
         info!("📥 处理传统下载: {}", req.file_id);
         
@@ -275,15 +273,18 @@ impl HybridFileService {
                     FileInfo {
                         name: req.file_id.clone(),
                         size: vdfs_info.size,
-                        file_type: FileType::File as i32,
+                        file_type: FileType::Regular as i32,
                         permissions: Some(FilePermissions {
+                            mode: 0o644,
+                            owner: "user".to_string(),
+                            group: "group".to_string(),
                             readable: true,
                             writable: true,
                             executable: false,
                         }),
                         created_at: vdfs_info.created_at.timestamp() as u64,
                         modified_at: vdfs_info.modified_at.timestamp() as u64,
-                        hash: vdfs_info.hash,
+                        checksum: vdfs_info.hash.clone(),
                         mime_type: "application/octet-stream".to_string(),
                         encryption_info: None,
                         sync_status: SyncStatus::Synced as i32,
@@ -345,7 +346,7 @@ impl HybridFileService {
         });
         
         let output_stream = ReceiverStream::new(rx);
-        Ok(Response::new(Box::pin(output_stream) as Self::DownloadFileStream))
+        Ok(Response::new(Box::pin(output_stream) as <Self as FileService>::DownloadFileStream))
     }
 }
 
@@ -377,7 +378,7 @@ impl FileService for HybridFileService {
                     file_id.clone(),
                     user_id,
                     file_info.name.clone(),
-                    file_info.size,
+                    file_info.size as u64,
                 ).await?;
                 
                 // 启动UTP传输
@@ -407,7 +408,7 @@ impl FileService for HybridFileService {
     async fn download_file(
         &self,
         request: Request<DownloadFileRequest>,
-    ) -> Result<Response<Self::DownloadFileStream>, Status> {
+    ) -> Result<Response<<Self as FileService>::DownloadFileStream>, Status> {
         let req = request.get_ref();
         info!("📥 下载文件请求: {}", req.file_id);
         
@@ -457,7 +458,7 @@ impl FileService for HybridFileService {
                 });
                 
                 let output_stream = ReceiverStream::new(rx);
-                return Ok(Response::new(Box::pin(output_stream) as Self::DownloadFileStream));
+                return Ok(Response::new(Box::pin(output_stream) as <Self as FileService>::DownloadFileStream));
             }
         }
         
@@ -483,8 +484,11 @@ impl FileService for HybridFileService {
                         .map(|entry| FileInfo {
                             name: entry.name,
                             size: entry.size,
-                            file_type: if entry.is_directory { FileType::Directory } else { FileType::File } as i32,
+                            file_type: if entry.is_directory { FileType::Directory } else { FileType::Regular } as i32,
                             permissions: Some(FilePermissions {
+                                mode: if entry.is_directory { 0o755 } else { 0o644 },
+                                owner: "user".to_string(),
+                                group: "group".to_string(),
                                 readable: true,
                                 writable: true,
                                 executable: entry.is_directory,
@@ -592,23 +596,33 @@ impl FileService for HybridFileService {
             let virtual_path = VirtualPath::new(&format!("/files/{}", req.file_id))?;
             if let Ok(vdfs_info) = vdfs.get_file_info(&virtual_path).await {
                 let file_info = FileInfo {
+                    file_id: req.file_id.clone(),
                     name: req.file_id.clone(),
-                    size: vdfs_info.size,
-                    file_type: FileType::File as i32,
+                    path: format!("/files/{}", req.file_id),
+                    parent_path: "/files".to_string(),
+                    size: vdfs_info.size as i64,
+                    created_at: vdfs_info.created_at.timestamp(),
+                    modified_at: vdfs_info.modified_at.timestamp(),
+                    accessed_at: chrono::Utc::now().timestamp(),
+                    file_type: FileType::Regular as i32,
+                    mime_type: "application/octet-stream".to_string(),
+                    checksum: vdfs_info.hash.clone(),
                     permissions: Some(FilePermissions {
+                        mode: 0o644,
+                        owner: "user".to_string(),
+                        group: "group".to_string(),
                         readable: true,
                         writable: true,
                         executable: false,
                     }),
-                    created_at: vdfs_info.created_at.timestamp() as u64,
-                    modified_at: vdfs_info.modified_at.timestamp() as u64,
-                    hash: vdfs_info.hash,
-                    mime_type: "application/octet-stream".to_string(),
-                    encryption_info: None,
+                    is_directory: false,
+                    is_symlink: false,
+                    chunk_count: vdfs_info.chunk_count as i32,
+                    chunk_ids: vdfs_info.chunk_ids.clone(),
+                    replication_factor: vdfs_info.replication_factor as i32,
+                    is_compressed: false,
+                    is_encrypted: false,
                     sync_status: SyncStatus::Synced as i32,
-                    chunk_count: vdfs_info.chunk_count as u64,
-                    chunk_size: vdfs_info.chunk_size,
-                    replication_factor: vdfs_info.replication_factor as u32,
                 };
                 return Ok(Response::new(file_info));
             }
@@ -629,13 +643,13 @@ impl FileService for HybridFileService {
         request: Request<GetSyncStatusRequest>,
     ) -> Result<Response<SyncStatusResponse>, Status> {
         let req = request.into_inner();
-        debug!("🔄 获取同步状态: {}", req.file_id);
+        debug!("🔄 获取同步状态: {}", req.path);
         
         // 获取所有活跃的hybrid会话
         let active_sessions = self.hybrid_coordinator.get_active_sessions();
         let hybrid_sessions: Vec<_> = active_sessions
             .into_iter()
-            .filter(|session| session.file_id == req.file_id)
+            .filter(|session| session.file_info.remote_path == req.path)
             .collect();
         
         let sync_status = if hybrid_sessions.is_empty() {
@@ -644,17 +658,51 @@ impl FileService for HybridFileService {
             // 检查会话状态
             match hybrid_sessions[0].status {
                 SessionStatus::Transferring => SyncStatus::Syncing,
-                SessionStatus::Failed => SyncStatus::Failed,
+                SessionStatus::Failed => SyncStatus::Error,
                 _ => SyncStatus::Pending,
             }
         };
         
         Ok(Response::new(SyncStatusResponse {
-            sync_status: sync_status as i32,
-            last_sync_time: chrono::Utc::now().timestamp() as u64,
-            sync_message: format!("Hybrid传输状态: {:?}", sync_status),
+            overall_status: sync_status as i32,
+            pending_uploads: if sync_status == SyncStatus::Pending { 1 } else { 0 },
+            pending_downloads: 0,
+            syncing_files: if sync_status == SyncStatus::Syncing { 1 } else { 0 },
+            error_files: if sync_status == SyncStatus::Error { 1 } else { 0 },
+            conflict_files: 0,
+            bytes_to_upload: 0,
+            bytes_to_download: 0,
+            pending_files: vec![],
         }))
     }
+}
+
+impl HybridFileService {
+    /// 获取传输统计信息
+    pub fn get_transfer_stats(&self) -> TransferStats {
+        let sessions = self.hybrid_coordinator.get_active_sessions();
+        let total_sessions = sessions.len();
+        let active_uploads = sessions.iter().filter(|s| s.transfer_type == TransferType::Upload).count();
+        let active_downloads = sessions.iter().filter(|s| s.transfer_type == TransferType::Download).count();
+        
+        TransferStats {
+            total_sessions,
+            active_uploads,
+            active_downloads,
+            total_bytes_transferred: 0, // 需要从会话中累计
+            average_transfer_rate: 0.0,
+        }
+    }
+}
+
+/// 传输统计信息
+#[derive(Debug, Clone)]
+pub struct TransferStats {
+    pub total_sessions: usize,
+    pub active_uploads: usize,
+    pub active_downloads: usize,
+    pub total_bytes_transferred: u64,
+    pub average_transfer_rate: f64,
 }
 
 impl Default for HybridFileService {
