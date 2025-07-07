@@ -15,7 +15,7 @@ use uuid::Uuid;
 use data_portal_core::{
     TransportManager, TransportType, NodeInfo, Language,
     manager::TransportManagerConfig,
-    UniversalTransport,
+    DataPortalTransport,
 };
 
 /// Data Portal 客户端
@@ -40,7 +40,7 @@ pub struct TransferConfig {
 impl Default for TransferConfig {
     fn default() -> Self {
         Self {
-            mode: TransportType::Universal,
+            mode: TransportType::DataPortal,
             chunk_size: 1024 * 1024, // 1MB
             enable_compression: false,
             timeout_secs: 300, // 5分钟

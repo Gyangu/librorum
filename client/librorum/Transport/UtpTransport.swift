@@ -2,7 +2,7 @@
 //  UtpTransport.swift
 //  librorum
 //
-//  UTP (Universal Transport Protocol) Swift实现
+//  UTP (Data Portal Protocol) Swift实现
 //  与Rust backend的hybrid架构集成
 //
 

@@ -46,7 +46,7 @@ librorum/
 │   ├── tklog_test/          # 日志系统测试
 │   └── tracing_test/        # 追踪系统测试
 │
-├── 🌍 universal-transport/    # Data Portal 传输协议实现
+├── 🌍 data-portal/    # Data Portal 传输协议实现
 │   ├── rust/                # Rust 实现
 │   ├── swift/               # Swift 实现
 │   └── examples/            # 跨语言示例
@@ -117,8 +117,8 @@ open client/librorum.xcodeproj
    - 路径：`/Users/gy/librorum/`
    - 包含：分布式文件系统核心组件 (shared, core, cli, client)
 
-2. **传输协议仓库**: `https://github.com/Gyangu/universal-transport.git`
-   - 路径：`/Users/gy/librorum/universal-transport/`
+2. **传输协议仓库**: `https://github.com/Gyangu/data-portal.git`
+   - 路径：`/Users/gy/librorum/data-portal/`
    - 包含：Data Portal 高性能传输协议实现
    - **独立仓库**，非 git submodule
 
@@ -129,7 +129,7 @@ git add . && git commit -m "更新核心功能"
 git push origin main
 
 # 传输协议仓库操作（需要先切换目录）
-cd universal-transport/
+cd data-portal/
 git add . && git commit -m "更新传输协议"
 git push origin main
 cd ..

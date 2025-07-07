@@ -292,7 +292,7 @@ impl DataPortalClient {
     pub async fn send_data(&self, data: Bytes) -> Result<()> {
         let _stream = self.connect().await?;
         
-        // TODO: 使用 Universal Transport 客户端发送数据
+        // TODO: 使用 Data Portal 客户端发送数据
         info!("通过 Data Portal 发送数据: {} 字节", data.len());
         
         Ok(())

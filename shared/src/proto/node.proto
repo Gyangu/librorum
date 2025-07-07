@@ -119,5 +119,5 @@ message DataPortalEndpointResponse {
   string host = 1;              // Data Portal主机地址
   int32 port = 2;               // Data Portal端口
   bool available = 3;           // 是否可用
-  string protocol = 4;          // 协议类型 ("universal-transport")
+  string protocol = 4;          // 协议类型 ("data-portal")
 } 

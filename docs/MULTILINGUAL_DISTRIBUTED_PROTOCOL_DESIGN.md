@@ -56,7 +56,7 @@ enum TransportStrategy {
     case sharedMemory(region: String)     // 同机器: 200-1000MB/s
     case swiftOptimized(endpoint: String) // Swift网络: 50-200MB/s  
     case rustOptimized(endpoint: String)  // Rust网络: 100-300MB/s
-    case universal(endpoint: String)      // 通用协议: 10-50MB/s
+    case dataPortal(endpoint: String)      // 通用协议: 10-50MB/s
 }
 
 class SmartTransportSelector {
@@ -80,7 +80,7 @@ class SmartTransportSelector {
         }
         
         // 3. 跨语言通用协议
-        return .universal(endpoint: destination.endpoint)
+        return .dataPortal(endpoint: destination.endpoint)
     }
 }
 ```
@@ -455,16 +455,16 @@ impl RustOptimizedTransport {
 
 ```swift
 // Swift端统一传输管理器
-protocol UniversalTransport {
+protocol DataPortalTransport {
     func send<T: Codable>(_ data: T, to destination: NodeInfo) async throws
     func receive<T: Codable>(_ type: T.Type, from source: NodeInfo) async throws -> T
     func broadcast<T: Codable>(_ data: T, to nodes: [NodeInfo]) async throws
 }
 
-class SmartTransportManager: UniversalTransport {
+class SmartTransportManager: DataPortalTransport {
     private let sharedMemory: CrossPlatformSharedMemory
     private let swiftTransport: SwiftOptimizedTransport
-    private let universalTransport: UniversalTransport
+    private let dataPortalTransport: DataPortalTransport
     private let performanceMonitor: TransportPerformanceMonitor
     
     func send<T: Codable>(_ data: T, to destination: NodeInfo) async throws {
@@ -487,8 +487,8 @@ class SmartTransportManager: UniversalTransport {
         case .swiftOptimized:
             try await swiftTransport.sendSwiftOptimized(data)
             
-        case .universal:
-            try await universalTransport.send(data, to: destination)
+        case .dataPortal:
+            try await dataPortalTransport.send(data, to: destination)
         }
     }
     
@@ -504,7 +504,7 @@ class SmartTransportManager: UniversalTransport {
         // 3. 数据大小考虑
         if dataSize > sharedMemoryThreshold && networkCondition.bandwidth < lowBandwidthThreshold {
             // 大数据 + 低带宽 = 压缩传输
-            return .universal // 使用通用协议的压缩功能
+            return .dataPortal // 使用通用协议的压缩功能
         }
         
         // 4. 语言匹配
@@ -512,14 +512,14 @@ class SmartTransportManager: UniversalTransport {
             return .swiftOptimized
         }
         
-        return .universal
+        return .dataPortal
     }
 }
 ```
 
 ```rust
 // Rust端统一传输管理器
-pub trait UniversalTransport {
+pub trait DataPortalTransport {
     async fn send<T: Serialize>(&self, data: &T, destination: &NodeInfo) -> Result<()>;
     async fn receive<T: DeserializeOwned>(&self, source: &NodeInfo) -> Result<T>;
     async fn broadcast<T: Serialize>(&self, data: &T, nodes: &[NodeInfo]) -> Result<()>;
@@ -528,11 +528,11 @@ pub trait UniversalTransport {
 pub struct SmartTransportManager {
     shared_memory: Arc<CrossPlatformSharedMemory>,
     rust_transport: Arc<RustOptimizedTransport>,
-    universal_transport: Arc<UniversalTransport>,
+    dataPortal_transport: Arc<DataPortalTransport>,
     performance_monitor: Arc<TransportPerformanceMonitor>,
 }
 
-impl UniversalTransport for SmartTransportManager {
+impl DataPortalTransport for SmartTransportManager {
     async fn send<T: Serialize>(&self, data: &T, destination: &NodeInfo) -> Result<()> {
         let strategy = self.select_optimal_strategy(destination, std::mem::size_of::<T>()).await?;
         
@@ -547,8 +547,8 @@ impl UniversalTransport for SmartTransportManager {
                 self.rust_transport.send_rust_optimized(data).await
             }
             
-            TransportStrategy::Universal => {
-                self.universal_transport.send(data, destination).await
+            TransportStrategy::DataPortal => {
+                self.dataPortal_transport.send(data, destination).await
             }
         };
         
@@ -576,13 +576,13 @@ impl UniversalTransport for SmartTransportManager {
         // 3. 自适应策略选择
         if data_size > SHARED_MEMORY_THRESHOLD && network_condition.bandwidth < LOW_BANDWIDTH_THRESHOLD {
             // 大数据 + 低带宽 = 通用协议 (支持压缩)
-            return Ok(TransportStrategy::Universal);
+            return Ok(TransportStrategy::DataPortal);
         }
         
         // 4. 语言优化
         match destination.language {
             Language::Rust => Ok(TransportStrategy::RustOptimized),
-            Language::Swift => Ok(TransportStrategy::Universal), // 跨语言
+            Language::Swift => Ok(TransportStrategy::DataPortal), // 跨语言
         }
     }
 }
@@ -647,12 +647,12 @@ class TransportPerformanceMonitor {
         }
         
         if historicalData.isEmpty {
-            return .universal // 默认策略
+            return .dataPortal // 默认策略
         }
         
         // 选择吞吐量最高的策略
         let bestStrategy = historicalData.max { $0.throughput < $1.throughput }?.strategy
-        return bestStrategy ?? .universal
+        return bestStrategy ?? .dataPortal
     }
 }
 ```

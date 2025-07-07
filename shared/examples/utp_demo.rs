@@ -1,6 +1,6 @@
 //! UTP传输演示程序
 //! 
-//! 演示如何使用Universal Transport Protocol进行高性能文件传输
+//! 演示如何使用Data Portal Protocol进行高性能文件传输
 
 use librorum_shared::transport::{
     UtpConfig, TransportMode, UtpTransportFactory, UtpTransport,
@@ -14,7 +14,7 @@ use tokio::time::{sleep, Duration};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🌟 Universal Transport Protocol 演示");
+    println!("🌟 Data Portal Protocol 演示");
     println!("=====================================");
     
     // 创建测试文件

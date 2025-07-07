@@ -1,13 +1,13 @@
 //! UTP二进制协议定义
 //! 
-//! 基于universal-transport的高性能二进制协议实现
+//! 基于data-portal的高性能二进制协议实现
 
 use std::time::{SystemTime, UNIX_EPOCH};
 use crc32fast::Hasher;
 use serde::{Deserialize, Serialize};
 
-/// UTP协议魔数
-pub const UTP_MAGIC: u32 = 0x55545042; // "UTPB"
+/// Data Portal协议魔数
+pub const UTP_MAGIC: u32 = 0x44505442; // "DPTB"
 
 /// UTP协议版本
 pub const UTP_VERSION: u8 = 1;

@@ -198,7 +198,7 @@
   - ✅ 副本管理 - 健康检查、自动修复、负载均衡
 
 ### 2025-07-05
-- 🚀 **重大突破**：完成了Universal Transport Protocol (UTP)高性能通讯系统！
+- 🚀 **重大突破**：完成了Data Portal Protocol (DPP)高性能通讯系统！
 - ✅ **核心架构实现**：
   - 完整的传输抽象层 (Transport trait)
   - 智能传输策略选择器 (StrategySelector)
@@ -211,9 +211,9 @@
   - 完整的Transport trait适配器
   - 性能指标和健康监控
 - ✅ **项目结构**：
-  - `universal-transport-core` - 核心抽象和传输管理
-  - `universal-transport-shared-memory` - 共享内存传输实现
-  - `universal-transport-network` - 网络传输协议
+  - `data-portal-core` - 核心抽象和传输管理
+  - `data-portal-shared-memory` - 共享内存传输实现
+  - `data-portal-network` - 网络传输协议
   - 完整的错误处理和类型安全
 - ✅ **性能目标**：
   - 同机器通讯：200-800 MB/s (比gRPC快100-800倍)

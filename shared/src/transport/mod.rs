@@ -1,9 +1,9 @@
-//! Universal Transport Protocol (UTP) - 高性能文件传输
+//! Data Portal Protocol (DPP) - 高性能文件传输
 //! 
-//! 这个模块提供了一个封装好的UTP实现，用于librorum的文件传输。
+//! 这个模块提供了一个封装好的Data Portal实现，用于librorum的文件传输。
 //! 架构设计：
 //! - gRPC: 控制平面 (元数据、认证、协调)
-//! - UTP: 数据平面 (实际文件数据传输)
+//! - Data Portal: 数据平面 (实际文件数据传输)
 
 pub mod protocol;
 pub mod server;

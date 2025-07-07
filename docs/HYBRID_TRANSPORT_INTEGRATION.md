@@ -1,16 +1,16 @@
-# Universal Transport Protocol (UTP) - Hybrid Architecture Integration
+# Data Portal Protocol (UTP) - Hybrid Architecture Integration
 
 ## 🎯 项目完成状态
 
 **✅ 完全实现并集成到librorum项目**
 
-本文档说明了如何将universal-transport高性能传输协议集成到librorum分布式文件系统中，实现**gRPC控制 + UTP数据传输**的hybrid架构。
+本文档说明了如何将data-portal高性能传输协议集成到librorum分布式文件系统中，实现**gRPC控制 + UTP数据传输**的hybrid架构。
 
 ## 🚀 核心特性
 
 ### 已实现功能
 
-1. **✅ Universal Transport Protocol库封装** (`shared/src/transport/`)
+1. **✅ Data Portal Protocol库封装** (`shared/src/transport/`)
    - 二进制协议定义 (TCP-like 32字节固定头部)
    - 网络传输实现 (TCP Socket)
    - 共享内存传输实现 (POSIX)
@@ -62,7 +62,7 @@ librorum/
 │   ├── UtpMessage.swift           # 二进制协议消息
 │   └── SharedMemoryManager.swift  # 共享内存管理
 
-└── universal-transport/            # 原始性能测试
+└── data-portal/            # 原始性能测试
     ├── README.md                  # 性能测试结果
     ├── posix_actual_benchmark.rs  # 实际性能基准测试
     └── POSIX_SPEED_ANALYSIS.md   # 详细性能分析
@@ -76,7 +76,7 @@ librorum/
 // 32字节固定头部，与Rust完全兼容
 #[repr(C)]
 pub struct UtpHeader {
-    pub magic: u32,        // 协议魔数 (0x55545042 "UTPB")
+    pub magic: u32,        // 协议魔数 (0x44505442 "DPTB")
     pub version: u8,       // 协议版本 (1)
     pub message_type: u8,  // 消息类型
     pub flags: u16,        // 标志位
@@ -221,7 +221,7 @@ let session = try await client.uploadFile(
 
 ## 📝 总结
 
-Universal Transport Protocol的集成为librorum带来了显著的性能提升，实现了：
+Data Portal Protocol的集成为librorum带来了显著的性能提升，实现了：
 
 - **17.2 GB/s**的峰值传输速度
 - **0.02微秒**的超低延迟通信
