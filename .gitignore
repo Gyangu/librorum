@@ -17,6 +17,17 @@ Cargo.lock
 *.dll
 *.exe
 
+# Large test files and binaries (prevent accidental commits)
+*.bin
+*.dat
+*100mb*
+*1gb*
+test_large*
+test_performance*
+librorum_backend
+# But allow small essential binaries if needed
+!small_*.bin
+
 # Debug files
 *.pdb
 
