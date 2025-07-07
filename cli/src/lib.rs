@@ -8,6 +8,14 @@ use tonic::transport::Channel;
 // Data Portal客户端模块
 pub mod data_portal_client;
 pub mod simple_data_portal_client;
+pub mod large_file_client;
+pub mod progress;
+pub mod resume_transfer;
+pub mod concurrent_transfer_client;
+pub mod optimized_data_portal_client;
+pub mod zero_copy_client;
+pub mod zero_copy_demo;
+pub mod error_handling_test;
 
 /// librorum 分布式文件系统命令行工具
 #[derive(Parser, Debug, PartialEq)]
@@ -112,6 +120,46 @@ pub enum Command {
         /// 是否压缩文件
         #[clap(long)]
         compress: bool,
+        
+        /// 启用大文件传输模式 (自动检测，或强制启用)
+        #[clap(long)]
+        large_file: bool,
+        
+        /// 最大并发连接数 (大文件模式)
+        #[clap(long, default_value = "4")]
+        max_concurrent: usize,
+        
+        /// 块大小 (MB，大文件模式，0表示自动)
+        #[clap(long, default_value = "0")]
+        chunk_size_mb: usize,
+        
+        /// 启用断点续传
+        #[clap(long)]
+        resume: bool,
+        
+        /// 启用高性能并发传输模式
+        #[clap(long)]
+        concurrent: bool,
+        
+        /// 连接池大小 (高性能模式)
+        #[clap(long, default_value = "8")]
+        pool_size: usize,
+        
+        /// 启用零拷贝优化模式
+        #[clap(long)]
+        optimized: bool,
+        
+        /// 缓冲区大小 (KB，优化模式)
+        #[clap(long, default_value = "1024")]
+        buffer_size_kb: usize,
+        
+        /// 启用最高性能模式 (跳过哈希验证)
+        #[clap(long)]
+        max_performance: bool,
+        
+        /// 启用完全零拷贝模式 (最高性能，无协议开销)
+        #[clap(long)]
+        zero_copy: bool,
     },
 
     /// 下载文件从分布式文件系统
@@ -131,6 +179,34 @@ pub enum Command {
         /// 下载长度 (0表示全部)
         #[clap(long, default_value = "0")]
         length: u64,
+        
+        /// 启用断点续传
+        #[clap(long)]
+        resume: bool,
+        
+        /// 启用高性能并发传输模式
+        #[clap(long)]
+        concurrent: bool,
+        
+        /// 连接池大小 (高性能模式)
+        #[clap(long, default_value = "8")]
+        pool_size: usize,
+        
+        /// 启用零拷贝优化模式
+        #[clap(long)]
+        optimized: bool,
+        
+        /// 缓冲区大小 (KB，优化模式)
+        #[clap(long, default_value = "1024")]
+        buffer_size_kb: usize,
+        
+        /// 启用最高性能模式 (跳过哈希验证)
+        #[clap(long)]
+        max_performance: bool,
+        
+        /// 启用完全零拷贝模式 (最高性能，无协议开销)
+        #[clap(long)]
+        zero_copy: bool,
     },
 
     /// 列出远程目录中的文件
@@ -188,6 +264,78 @@ pub enum Command {
         #[clap(short, long)]
         path: Option<String>,
     },
+
+    /// 恢复中断的传输
+    Resume {
+        /// 会话ID (可选，自动查找最近的会话)
+        #[clap(short, long)]
+        session: Option<String>,
+        
+        /// 最大并发连接数
+        #[clap(long, default_value = "4")]
+        max_concurrent: usize,
+    },
+
+    /// 列出传输会话
+    ListSessions {
+        /// 是否显示已完成的会话
+        #[clap(long)]
+        include_completed: bool,
+    },
+
+    /// 取消传输会话
+    CancelSession {
+        /// 会话ID
+        session_id: String,
+    },
+
+    /// 清理过期会话
+    CleanupSessions {
+        /// 保留天数
+        #[clap(long, default_value = "7")]
+        max_age_days: u64,
+    },
+
+    /// 运行性能基准测试
+    Benchmark {
+        /// 测试文件路径
+        #[clap(short, long)]
+        file: PathBuf,
+        
+        /// 测试迭代次数
+        #[clap(short, long, default_value = "5")]
+        iterations: u32,
+        
+        /// 启用高性能并发模式测试
+        #[clap(long)]
+        concurrent: bool,
+        
+        /// 连接池大小
+        #[clap(long, default_value = "8")]
+        pool_size: usize,
+        
+        /// 启用零拷贝优化模式测试
+        #[clap(long)]
+        optimized: bool,
+        
+        /// 缓冲区大小 (KB，优化模式)
+        #[clap(long, default_value = "1024")]
+        buffer_size_kb: usize,
+        
+        /// 启用最高性能模式测试 (跳过哈希验证)
+        #[clap(long)]
+        max_performance: bool,
+        
+        /// 启用完全零拷贝模式测试 (最高性能，无协议开销)
+        #[clap(long)]
+        zero_copy: bool,
+    },
+    
+    /// 运行零拷贝性能演示
+    DemoZeroCopy,
+    
+    /// 测试错误处理和重试机制
+    TestErrorHandling,
 }
 
 /// 尝试连接到core服务
@@ -226,6 +374,23 @@ pub async fn get_data_portal_endpoint(server: &str) -> Result<std::net::SocketAd
     let addr_str = format!("{}:{}", endpoint_info.host, endpoint_info.port);
     addr_str.parse()
         .with_context(|| format!("无法解析Data Portal地址: {}", addr_str))
+}
+
+/// 获取零拷贝Data Portal端点
+pub fn get_zero_copy_endpoint(server: &str) -> Result<std::net::SocketAddr> {
+    let url = url::Url::parse(server)
+        .with_context(|| format!("无效的服务器地址: {}", server))?;
+    
+    let host = url.host_str()
+        .ok_or_else(|| anyhow::anyhow!("服务器地址必须包含主机名"))?;
+    
+    // 零拷贝端口使用gRPC端口+2
+    let grpc_port = url.port().unwrap_or(50051);
+    let zero_copy_port = grpc_port + 2;
+    
+    let addr_str = format!("{}:{}", host, zero_copy_port);
+    addr_str.parse()
+        .with_context(|| format!("无法解析零拷贝Data Portal地址: {}", addr_str))
 }
 
 /// 解析服务器地址，提取Data Portal端点 (已弃用，保留向后兼容)

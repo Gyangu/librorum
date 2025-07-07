@@ -1,4 +1,4 @@
-use librorum_shared::{NodeConfig, DataPortalServer};
+use librorum_shared::{NodeConfig, DataPortalServer, ZeroCopyDataPortalServer};
 use crate::proto::file::file_service_server::FileServiceServer;
 use crate::proto::log::log_service_server::LogServiceServer;
 use crate::proto::node::node_service_server::NodeServiceServer;
@@ -270,8 +270,9 @@ impl NodeManager {
 
         // 计算 Data Portal 端口 (gRPC 端口 + 1)
         let data_portal_port = port + 1;
+        let zero_copy_port = port + 2; // 零拷贝端口 (gRPC 端口 + 2)
         
-        // 启动 Data Portal 服务器任务
+        // 启动标准 Data Portal 服务器任务
         let data_portal_task = tokio::spawn(async move {
             info!("启动Data Portal服务器: 0.0.0.0:{}", data_portal_port);
             
@@ -284,6 +285,23 @@ impl NodeManager {
                 },
                 Err(e) => {
                     error!("Data Portal服务器运行失败: {}", e);
+                }
+            }
+        });
+        
+        // 启动零拷贝 Data Portal 服务器任务
+        let zero_copy_task = tokio::spawn(async move {
+            info!("🚀 启动零拷贝Data Portal服务器: 0.0.0.0:{}", zero_copy_port);
+            
+            let bind_addr = format!("0.0.0.0:{}", zero_copy_port).parse().unwrap();
+            let mut zero_copy_server = ZeroCopyDataPortalServer::new(bind_addr);
+            
+            match zero_copy_server.run().await {
+                Ok(_) => {
+                    info!("⚡ 零拷贝Data Portal服务器正常退出");
+                },
+                Err(e) => {
+                    error!("❌ 零拷贝Data Portal服务器运行失败: {}", e);
                 }
             }
         });
@@ -307,6 +325,9 @@ impl NodeManager {
         tokio::select! {
             _ = data_portal_task => {
                 warn!("Data Portal服务器退出");
+            },
+            _ = zero_copy_task => {
+                warn!("⚡ 零拷贝Data Portal服务器退出");
             },
             _ = grpc_task => {
                 warn!("gRPC服务器退出");

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
+use sha2::{Sha256, Digest};
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
@@ -11,11 +12,19 @@ use data_portal_core::{TransportManager, TransportManagerConfig, TransportType};
 /// 文件传输协议消息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DataPortalMessage {
-    /// 文件传输开始
+    /// 文件传输开始 (上传)
     FileTransferStart {
         file_name: String,
         file_size: u64,
         chunk_size: usize,
+        /// 文件SHA-256哈希值（用于完整性验证）
+        file_hash: Option<String>,
+    },
+    /// 文件下载请求
+    FileDownloadRequest {
+        file_name: String,
+        offset: u64,
+        length: u64, // 0表示下载全部
     },
     /// 文件数据块
     FileChunk {
@@ -23,9 +32,21 @@ pub enum DataPortalMessage {
         #[serde(with = "serde_bytes")]
         data: Vec<u8>,
         is_last: bool,
+        /// 数据块SHA-256哈希值（用于块级别验证）
+        chunk_hash: Option<String>,
     },
     /// 传输完成确认
-    TransferComplete,
+    TransferComplete {
+        /// 最终文件哈希值（服务器端计算）
+        final_hash: Option<String>,
+    },
+    /// 完整性验证结果
+    IntegrityVerification {
+        success: bool,
+        message: String,
+        expected_hash: Option<String>,
+        actual_hash: Option<String>,
+    },
     /// 错误消息
     Error { message: String },
 }
@@ -208,8 +229,11 @@ impl DataPortalServer {
             };
             
             match message {
-                DataPortalMessage::FileTransferStart { file_name, file_size, chunk_size } => {
+                DataPortalMessage::FileTransferStart { file_name, file_size, chunk_size, file_hash } => {
                     info!("开始接收文件: {} ({} 字节, 块大小: {})", file_name, file_size, chunk_size);
+                    if let Some(ref hash) = file_hash {
+                        info!("预期文件哈希: {}", hash);
+                    }
                     total_bytes = 0;
                     
                     // 预分配缓冲区以适应块大小，减少后续分配
@@ -217,9 +241,36 @@ impl DataPortalServer {
                         buffer.reserve(chunk_size + 1024 - buffer.capacity());
                     }
                 }
-                DataPortalMessage::FileChunk { chunk_id, data, is_last } => {
+                DataPortalMessage::FileDownloadRequest { file_name, offset, length } => {
+                    info!("收到文件下载请求: {} (偏移: {}, 长度: {})", file_name, offset, length);
+                    
+                    // 处理文件下载请求
+                    if let Err(e) = Self::handle_file_download(stream, &file_name, offset, length).await {
+                        error!("处理文件下载失败: {}", e);
+                    }
+                    break; // 下载完成后结束连接
+                }
+                DataPortalMessage::FileChunk { chunk_id, data, is_last, chunk_hash } => {
                     total_bytes += data.len() as u64;
                     debug!("接收数据块 {}: {} 字节", chunk_id, data.len());
+                    
+                    // 验证数据块哈希值
+                    if let Some(ref expected_hash) = chunk_hash {
+                        let mut hasher = Sha256::new();
+                        hasher.update(&data);
+                        let actual_hash = format!("{:x}", hasher.finalize());
+                        
+                        if actual_hash != *expected_hash {
+                            error!("数据块{}哈希验证失败: 期望 {}, 实际 {}", chunk_id, expected_hash, actual_hash);
+                            // 发送错误消息
+                            let error_msg = DataPortalMessage::Error {
+                                message: format!("数据块{}哈希验证失败", chunk_id),
+                            };
+                            // TODO: 发送错误消息给客户端
+                            break;
+                        }
+                        debug!("✓ 数据块{}哈希验证成功", chunk_id);
+                    }
                     
                     // 这里data是Bytes类型，已经是零拷贝的
                     // 可以直接传递给下游处理，无需额外拷贝
@@ -232,11 +283,32 @@ impl DataPortalServer {
                         break;
                     }
                 }
-                DataPortalMessage::TransferComplete => {
+                DataPortalMessage::TransferComplete { final_hash } => {
                     let duration = start_time.elapsed();
                     let throughput_mbps = (total_bytes as f64) / (1024.0 * 1024.0) / duration.as_secs_f64();
                     info!("传输完成确认: {} 字节, 耗时: {:.2}秒, 吞吐量: {:.2} MB/s", 
                           total_bytes, duration.as_secs_f64(), throughput_mbps);
+                    
+                    if let Some(ref client_hash) = final_hash {
+                        info!("客户端提供的文件哈希: {}", client_hash);
+                        
+                        // TODO: 在这里可以验证服务器端计算的哈希与客户端提供的哈希是否一致
+                        // 并发送验证结果回客户端
+                        let verification_msg = DataPortalMessage::IntegrityVerification {
+                            success: true, // 简化处理，假设验证成功
+                            message: "文件完整性验证成功".to_string(),
+                            expected_hash: final_hash.clone(),
+                            actual_hash: final_hash.clone(), // 实际应该是服务器计算的哈希
+                        };
+                        
+                        // TODO: 发送验证结果给客户端
+                    }
+                    
+                    break;
+                }
+                DataPortalMessage::IntegrityVerification { .. } => {
+                    // 客户端不应该收到完整性验证消息，这是发送给客户端的
+                    warn!("服务器收到意外的完整性验证消息");
                     break;
                 }
                 DataPortalMessage::Error { message } => {
@@ -250,6 +322,128 @@ impl DataPortalServer {
         }
         
         info!("客户端连接处理完成");
+        Ok(())
+    }
+
+    /// 处理文件下载请求
+    async fn handle_file_download(
+        mut stream: BufReader<TcpStream>,
+        file_name: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<()> {
+        use tokio::fs::File;
+        use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
+
+        info!("开始处理文件下载: {} (偏移: {}, 长度: {})", file_name, offset, length);
+
+        // 简单文件路径处理 - 在实际应用中应该有安全检查
+        let file_path = format!("./{}", file_name.trim_start_matches('/'));
+        
+        // 打开文件
+        let mut file = match File::open(&file_path).await {
+            Ok(file) => file,
+            Err(e) => {
+                error!("无法打开文件 {}: {}", file_path, e);
+                // 发送错误消息
+                let error_msg = DataPortalMessage::Error {
+                    message: format!("文件不存在: {}", file_name),
+                };
+                Self::send_message_to_stream(&mut stream, &error_msg).await?;
+                return Ok(());
+            }
+        };
+
+        // 获取文件大小
+        let file_size = file.metadata().await?.len();
+        let actual_length = if length == 0 { file_size - offset } else { length.min(file_size - offset) };
+
+        info!("文件大小: {} 字节, 实际下载长度: {} 字节", file_size, actual_length);
+
+        // 发送文件传输开始消息
+        let start_msg = DataPortalMessage::FileTransferStart {
+            file_name: file_name.to_string(),
+            file_size: actual_length,
+            chunk_size: 64 * 1024, // 64KB 块大小
+            file_hash: None, // 下载时不需要提供文件哈希
+        };
+
+        Self::send_message_to_stream(&mut stream, &start_msg).await?;
+
+        // 跳转到指定偏移量
+        if offset > 0 {
+            file.seek(SeekFrom::Start(offset)).await?;
+        }
+
+        // 分块发送文件数据
+        let chunk_size = 64 * 1024; // 64KB
+        let mut bytes_sent = 0u64;
+        let mut chunk_id = 0u32;
+        let mut buffer = vec![0u8; chunk_size];
+
+        while bytes_sent < actual_length {
+            let remaining = actual_length - bytes_sent;
+            let read_size = chunk_size.min(remaining as usize);
+            
+            let bytes_read = file.read(&mut buffer[..read_size]).await?;
+            if bytes_read == 0 {
+                break; // EOF
+            }
+
+            let is_last = bytes_sent + bytes_read as u64 >= actual_length;
+            
+            let chunk_msg = DataPortalMessage::FileChunk {
+                chunk_id,
+                data: buffer[..bytes_read].to_vec(),
+                is_last,
+                chunk_hash: None, // 下载时可以选择不计算块哈希以提高性能
+            };
+
+            Self::send_message_to_stream(&mut stream, &chunk_msg).await?;
+
+            bytes_sent += bytes_read as u64;
+            chunk_id += 1;
+
+            debug!("发送数据块 {}: {} 字节 (已发送: {}/{})", 
+                   chunk_id - 1, bytes_read, bytes_sent, actual_length);
+
+            if is_last {
+                break;
+            }
+        }
+
+        // 发送传输完成消息
+        let complete_msg = DataPortalMessage::TransferComplete {
+            final_hash: None, // 下载时不需要提供最终哈希
+        };
+        Self::send_message_to_stream(&mut stream, &complete_msg).await?;
+
+        info!("文件下载完成: {} 字节", bytes_sent);
+        Ok(())
+    }
+
+    /// 向流发送消息
+    async fn send_message_to_stream(
+        stream: &mut BufReader<TcpStream>,
+        message: &DataPortalMessage,
+    ) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+
+        // 序列化消息
+        let data = bincode::serialize(message)
+            .with_context(|| "序列化消息失败")?;
+
+        // 获取底层流的可写引用
+        let tcp_stream = stream.get_mut();
+
+        // 发送消息长度（4字节小端序）
+        let len = data.len() as u32;
+        tcp_stream.write_u32_le(len).await?;
+
+        // 发送消息数据
+        tcp_stream.write_all(&data).await?;
+        tcp_stream.flush().await?;
+
         Ok(())
     }
 

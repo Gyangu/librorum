@@ -2,8 +2,9 @@ use anyhow::Result;
 use clap::Parser;
 use librorum_cli::{
     Cli, Command, try_connect_to_core, try_connect_to_file_service, get_data_portal_endpoint, 
-    load_config, find_core_binary, validate_server_address,
-    simple_data_portal_client::SimpleDataPortalClient
+    get_zero_copy_endpoint, load_config, find_core_binary, validate_server_address,
+    simple_data_portal_client::SimpleDataPortalClient,
+    progress::{UploadProgressDisplay, DownloadProgressDisplay}
 };
 use librorum_shared::NodeConfig;
 use tracing::{error, info};
@@ -140,12 +141,12 @@ async fn main() -> Result<()> {
         }
 
         // 文件操作命令
-        Command::Upload { file, path, overwrite, compress } => {
-            handle_upload(&cli.server, file, path, *overwrite, *compress).await?;
+        Command::Upload { file, path, overwrite, compress, large_file, max_concurrent, chunk_size_mb, resume, concurrent, pool_size, optimized, buffer_size_kb, max_performance, zero_copy } => {
+            handle_upload(&cli.server, file, path, *overwrite, *compress, *large_file, *max_concurrent, *chunk_size_mb, *resume, *concurrent, *pool_size, *optimized, *buffer_size_kb, *max_performance, *zero_copy).await?;
         }
 
-        Command::Download { remote, output, offset, length } => {
-            handle_download(&cli.server, remote, output, *offset, *length).await?;
+        Command::Download { remote, output, offset, length, resume, concurrent, pool_size, optimized, buffer_size_kb, max_performance, zero_copy } => {
+            handle_download(&cli.server, remote, output, *offset, *length, *resume, *concurrent, *pool_size, *optimized, *buffer_size_kb, *max_performance, *zero_copy).await?;
         }
 
         Command::List { path, recursive, all } => {
@@ -166,6 +167,34 @@ async fn main() -> Result<()> {
 
         Command::Sync { path } => {
             handle_sync(&cli.server, path).await?;
+        }
+
+        Command::Resume { session, max_concurrent } => {
+            handle_resume(&cli.server, session, *max_concurrent).await?;
+        }
+
+        Command::ListSessions { include_completed } => {
+            handle_list_sessions(*include_completed).await?;
+        }
+
+        Command::CancelSession { session_id } => {
+            handle_cancel_session(session_id).await?;
+        }
+
+        Command::CleanupSessions { max_age_days } => {
+            handle_cleanup_sessions(*max_age_days).await?;
+        }
+
+        Command::Benchmark { file, iterations, concurrent, pool_size, optimized, buffer_size_kb, max_performance, zero_copy } => {
+            handle_benchmark(&cli.server, file, *iterations, *concurrent, *pool_size, *optimized, *buffer_size_kb, *max_performance, *zero_copy).await?;
+        }
+        
+        Command::DemoZeroCopy => {
+            librorum_cli::zero_copy_demo::run_zero_copy_demo().await?;
+        }
+        
+        Command::TestErrorHandling => {
+            handle_error_handling_test(&cli.server).await?;
         }
 
         _ => {
@@ -210,13 +239,23 @@ async fn start_core_process() -> Result<()> {
     Ok(())
 }
 
-/// 处理文件上传 - 使用Data Portal
+/// 处理文件上传 - 支持常规和大文件传输
 async fn handle_upload(
     server: &str,
     file_path: &Path,
     remote_path: &Option<String>,
-    overwrite: bool,
-    compress: bool,
+    _overwrite: bool,
+    _compress: bool,
+    large_file: bool,
+    max_concurrent: usize,
+    chunk_size_mb: usize,
+    resume: bool,
+    concurrent: bool,
+    pool_size: usize,
+    optimized: bool,
+    buffer_size_kb: usize,
+    max_performance: bool,
+    zero_copy: bool,
 ) -> Result<()> {
     // 检查文件是否存在
     if !file_path.exists() {
@@ -235,6 +274,35 @@ async fn handle_upload(
         .map(|p| p.clone())
         .unwrap_or_else(|| format!("/{}", file_name));
 
+    // 自动检测是否需要使用大文件模式
+    let use_large_file_mode = large_file || file_size > 100 * 1024 * 1024; // 100MB阈值
+
+    if resume {
+        handle_resume_upload(server, file_path, &target_path, file_size, max_concurrent, chunk_size_mb, use_large_file_mode).await
+    } else if zero_copy {
+        handle_zero_copy_upload(server, file_path, &target_path, file_size, buffer_size_kb).await
+    } else if max_performance {
+        handle_max_performance_upload(server, file_path, &target_path, file_size, buffer_size_kb).await
+    } else if optimized {
+        handle_optimized_upload(server, file_path, &target_path, file_size, buffer_size_kb).await
+    } else if concurrent {
+        handle_concurrent_upload(server, file_path, &target_path, file_size, pool_size).await
+    } else if use_large_file_mode {
+        handle_large_file_upload(server, file_path, &target_path, file_size, max_concurrent, chunk_size_mb).await
+    } else {
+        handle_regular_upload(server, file_path, &target_path, file_size).await
+    }
+}
+
+/// 处理常规文件上传
+async fn handle_regular_upload(
+    server: &str,
+    file_path: &Path,
+    target_path: &str,
+    file_size: u64,
+) -> Result<()> {
+    use librorum_cli::{simple_data_portal_client::SimpleDataPortalClient, progress::UploadProgressDisplay, get_data_portal_endpoint};
+
     println!("📤 使用Data Portal上传文件: {} -> {} ({} bytes)", 
              file_path.display(), target_path, file_size);
 
@@ -242,42 +310,174 @@ async fn handle_upload(
     let data_portal_endpoint = get_data_portal_endpoint(server).await?;
     info!("Data Portal端点: {}", data_portal_endpoint);
 
-    // 创建简化的Data Portal客户端
+    // 创建简化的Data Portal客户端和进度显示
     let client = SimpleDataPortalClient::new(data_portal_endpoint);
+    let progress_display = UploadProgressDisplay::new();
+    let progress_callback = progress_display.create_callback();
     
     // 开始上传
-    let result = client.upload_file(
+    let result = client.upload_file_with_progress(
         file_path,
-        &target_path,
+        target_path,
+        Some(progress_callback),
     ).await?;
 
-    println!(); // 新行
-    println!("✅ Data Portal上传完成!");
-    println!("  📊 传输统计:");
-    println!("    文件大小: {} bytes", result.bytes_transferred);
-    println!("    传输时间: {:.2} 秒", result.duration.as_secs_f64());
-    println!("    平均速度: {:.2} MB/s", result.throughput_mbps);
+    // 显示完成信息
+    progress_display.finish(&result);
 
     // 计算性能提升
     let grpc_estimated_rate = 50.0; // 假设gRPC约50MB/s
     if result.throughput_mbps > grpc_estimated_rate {
         let improvement = (result.throughput_mbps / grpc_estimated_rate - 1.0) * 100.0;
-        println!("  🚀 性能提升: 比gRPC快 {:.1}%", improvement);
+        println!("🚀 性能提升: 比gRPC快 {:.1}%", improvement);
     }
 
     Ok(())
 }
 
-/// 处理文件下载 - 使用Data Portal (暂未实现)
-async fn handle_download(
-    _server: &str,
-    _remote: &str,
-    _output: &Option<std::path::PathBuf>,
-    _offset: u64,
-    _length: u64,
+/// 处理大文件上传
+async fn handle_large_file_upload(
+    server: &str,
+    file_path: &Path,
+    target_path: &str,
+    file_size: u64,
+    max_concurrent: usize,
+    chunk_size_mb: usize,
 ) -> Result<()> {
-    println!("❌ 下载功能暂未实现");
-    Err(anyhow::anyhow!("下载功能暂未实现"))
+    use librorum_cli::{large_file_client::{LargeFileClient, LargeFileConfig}, progress::UploadProgressDisplay, get_data_portal_endpoint};
+
+    println!("🚀 使用大文件传输模式上传: {} -> {} ({:.2} MB)", 
+             file_path.display(), target_path, file_size as f64 / (1024.0 * 1024.0));
+
+    // 通过gRPC查询Data Portal端点
+    let data_portal_endpoint = get_data_portal_endpoint(server).await?;
+    info!("Data Portal端点: {}", data_portal_endpoint);
+
+    // 创建大文件传输配置
+    let mut config = LargeFileConfig::default();
+    config.max_concurrent_chunks = max_concurrent;
+    
+    if chunk_size_mb > 0 {
+        let chunk_size = chunk_size_mb * 1024 * 1024;
+        config.base_chunk_size = chunk_size;
+        config.max_chunk_size = chunk_size;
+        config.min_chunk_size = chunk_size;
+    }
+
+    // 创建大文件传输客户端和进度显示
+    let client = LargeFileClient::new(data_portal_endpoint, config);
+    let progress_display = UploadProgressDisplay::new();
+    let progress_callback = progress_display.create_callback();
+    
+    // 开始大文件上传
+    let result = client.upload_large_file(
+        file_path,
+        target_path,
+        Some(progress_callback),
+    ).await?;
+
+    // 显示完成信息
+    progress_display.finish(&result);
+
+    // 计算性能提升
+    let grpc_estimated_rate = 50.0; // 假设gRPC约50MB/s
+    if result.throughput_mbps > grpc_estimated_rate {
+        let improvement = (result.throughput_mbps / grpc_estimated_rate - 1.0) * 100.0;
+        println!("🚀 性能提升: 比gRPC快 {:.1}%", improvement);
+    }
+
+    Ok(())
+}
+
+/// 处理文件下载 - 使用Data Portal
+async fn handle_download(
+    server: &str,
+    remote: &str,
+    output: &Option<std::path::PathBuf>,
+    offset: u64,
+    length: u64,
+    resume: bool,
+    _concurrent: bool,
+    _pool_size: usize,
+    optimized: bool,
+    buffer_size_kb: usize,
+    _max_performance: bool,
+    _zero_copy: bool,
+) -> Result<()> {
+    // 确定本地保存路径
+    let local_path = match output {
+        Some(path) => path.clone(),
+        None => {
+            // 从远程路径提取文件名
+            let file_name = remote.split('/').last().unwrap_or("downloaded_file");
+            std::path::PathBuf::from(file_name)
+        }
+    };
+
+    if resume {
+        println!("🔄 启用断点续传下载文件: {} -> {}", remote, local_path.display());
+        return handle_resume_download(server, remote, &local_path, offset, length).await;
+    }
+
+    if optimized {
+        handle_optimized_download(server, remote, &Some(local_path), offset, length, buffer_size_kb).await
+    } else {
+        handle_regular_download(server, remote, &Some(local_path), offset, length).await
+    }
+}
+
+/// 处理常规文件下载 - 使用Data Portal
+async fn handle_regular_download(
+    server: &str,
+    remote: &str,
+    output: &Option<std::path::PathBuf>,
+    offset: u64,
+    length: u64,
+) -> Result<()> {
+    // 确定本地保存路径
+    let local_path = match output {
+        Some(path) => path.clone(),
+        None => {
+            // 从远程路径提取文件名
+            let file_name = remote.split('/').last().unwrap_or("downloaded_file");
+            std::path::PathBuf::from(file_name)
+        }
+    };
+
+    println!("📥 使用Data Portal下载文件: {} -> {} (偏移: {}, 长度: {})", 
+             remote, local_path.display(), offset, if length == 0 { "全部".to_string() } else { length.to_string() });
+
+    // 通过gRPC查询Data Portal端点
+    let data_portal_endpoint = get_data_portal_endpoint(server).await?;
+    info!("Data Portal端点: {}", data_portal_endpoint);
+
+    // 创建简化的Data Portal客户端和进度显示
+    let client = SimpleDataPortalClient::new(data_portal_endpoint);
+    let progress_display = DownloadProgressDisplay::new();
+    let progress_callback = progress_display.create_callback();
+    
+    // 开始下载
+    let result = client.download_file_with_progress(
+        remote,
+        &local_path,
+        offset,
+        length,
+        Some(progress_callback),
+    ).await?;
+
+    // 显示完成信息
+    progress_display.finish(&result);
+
+    // 计算性能提升
+    let grpc_estimated_rate = 50.0; // 假设gRPC约50MB/s
+    if result.throughput_mbps > grpc_estimated_rate {
+        let improvement = (result.throughput_mbps / grpc_estimated_rate - 1.0) * 100.0;
+        println!("🚀 性能提升: 比gRPC快 {:.1}%", improvement);
+    }
+
+    println!("📁 保存位置: {}", local_path.display());
+
+    Ok(())
 }
 
 /// 处理文件列表
@@ -516,5 +716,722 @@ async fn handle_sync(
         }
     }
 
+    Ok(())
+}
+
+/// 处理带断点续传的上传
+async fn handle_resume_upload(
+    server: &str,
+    file_path: &Path,
+    target_path: &str,
+    file_size: u64,
+    max_concurrent: usize,
+    chunk_size_mb: usize,
+    use_large_file_mode: bool,
+) -> Result<()> {
+    use librorum_cli::resume_transfer::{ResumeManager, TransferType, TransferConfig};
+    use std::env;
+    
+    println!("🔄 使用断点续传上传文件: {} -> {} ({:.2} MB)", 
+             file_path.display(), target_path, file_size as f64 / (1024.0 * 1024.0));
+
+    // 初始化断点续传管理器
+    let sessions_dir = env::temp_dir().join("librorum_sessions");
+    let mut resume_manager = ResumeManager::new(&sessions_dir);
+    resume_manager.init().await?;
+
+    // 查找现有会话
+    let session = resume_manager.find_resumable_session(file_path, target_path);
+    
+    if let Some(existing_session) = session {
+        println!("✅ 找到可恢复的传输会话: {}", existing_session.session_id);
+        println!("📊 已传输: {}/{} 字节 ({:.1}%)", 
+                 existing_session.transferred_bytes, 
+                 existing_session.total_size,
+                 existing_session.transferred_bytes as f64 / existing_session.total_size as f64 * 100.0);
+                 
+        let pending_chunks = resume_manager.get_pending_chunks(&existing_session.session_id);
+        println!("⏳ 剩余块数: {}", pending_chunks.len());
+        
+        // TODO: 实现断点续传逻辑
+        println!("⚠️  断点续传功能正在开发中，将使用常规上传");
+    } else {
+        println!("ℹ️  未找到可恢复的会话，创建新的传输会话");
+        
+        let config = TransferConfig {
+            chunk_size: if chunk_size_mb > 0 { chunk_size_mb * 1024 * 1024 } else { 64 * 1024 },
+            max_concurrent,
+            large_file_mode: use_large_file_mode,
+        };
+        
+        let _session_id = resume_manager.create_session(
+            file_path,
+            target_path,
+            file_size,
+            TransferType::Upload,
+            config,
+        ).await?;
+        
+        println!("📝 创建新的传输会话: {}", _session_id);
+    }
+
+    // 暂时回退到常规上传
+    if use_large_file_mode {
+        handle_large_file_upload(server, file_path, target_path, file_size, max_concurrent, chunk_size_mb).await
+    } else {
+        handle_regular_upload(server, file_path, target_path, file_size).await
+    }
+}
+
+/// 处理带断点续传的下载
+async fn handle_resume_download(
+    server: &str,
+    remote_path: &str,
+    local_path: &Path,
+    _offset: u64,
+    _length: u64,
+) -> Result<()> {
+    use librorum_cli::resume_transfer::{ResumeManager, TransferType, TransferConfig};
+    use std::env;
+    
+    println!("🔄 使用断点续传下载文件: {} -> {}", remote_path, local_path.display());
+
+    // 初始化断点续传管理器
+    let sessions_dir = env::temp_dir().join("librorum_sessions");
+    let mut resume_manager = ResumeManager::new(&sessions_dir);
+    resume_manager.init().await?;
+
+    // 查找现有会话
+    let session = resume_manager.find_resumable_session(local_path, remote_path);
+    
+    if let Some(existing_session) = session {
+        println!("✅ 找到可恢复的下载会话: {}", existing_session.session_id);
+        println!("📊 已下载: {}/{} 字节 ({:.1}%)", 
+                 existing_session.transferred_bytes, 
+                 existing_session.total_size,
+                 existing_session.transferred_bytes as f64 / existing_session.total_size as f64 * 100.0);
+                 
+        // TODO: 实现断点续传下载逻辑
+        println!("⚠️  断点续传下载功能正在开发中，将使用常规下载");
+    } else {
+        println!("ℹ️  未找到可恢复的下载会话，将创建新会话");
+        
+        // TODO: 获取远程文件大小并创建会话
+        println!("⚠️  需要先获取远程文件信息来创建下载会话");
+    }
+
+    // 暂时回退到常规下载
+    let local_path_opt = Some(local_path.to_path_buf());
+    handle_regular_download(server, remote_path, &local_path_opt, 0, 0).await
+}
+
+/// 处理恢复传输命令
+async fn handle_resume(
+    server: &str,
+    session_id: &Option<String>,
+    max_concurrent: usize,
+) -> Result<()> {
+    use librorum_cli::resume_transfer::ResumeManager;
+    use std::env;
+    
+    let sessions_dir = env::temp_dir().join("librorum_sessions");
+    let mut resume_manager = ResumeManager::new(&sessions_dir);
+    resume_manager.init().await?;
+
+    let target_session = if let Some(id) = session_id {
+        resume_manager.get_session(id).cloned()
+    } else {
+        // 查找最近的未完成会话
+        let sessions = resume_manager.list_sessions();
+        let mut latest_session: Option<&librorum_cli::resume_transfer::TransferSession> = None;
+        let mut latest_time = 0u64;
+        
+        for session in sessions {
+            if session.transferred_bytes < session.total_size && session.updated_at > latest_time {
+                latest_session = Some(session);
+                latest_time = session.updated_at;
+            }
+        }
+        
+        latest_session.map(|s| s.clone())
+    };
+
+    if let Some(session) = target_session {
+        println!("🔄 恢复传输会话: {}", session.session_id);
+        println!("📁 文件: {} -> {}", session.local_path.display(), session.remote_path);
+        println!("📊 进度: {}/{} 字节 ({:.1}%)", 
+                 session.transferred_bytes, 
+                 session.total_size,
+                 session.transferred_bytes as f64 / session.total_size as f64 * 100.0);
+
+        let pending_chunks = resume_manager.get_pending_chunks(&session.session_id);
+        println!("⏳ 剩余块数: {}", pending_chunks.len());
+
+        // TODO: 实现实际的恢复传输逻辑
+        println!("⚠️  恢复传输功能正在开发中");
+        
+        match session.transfer_type {
+            librorum_cli::resume_transfer::TransferType::Upload => {
+                println!("📤 恢复上传传输...");
+                handle_resume_upload(
+                    server,
+                    &session.local_path,
+                    &session.remote_path,
+                    session.total_size,
+                    max_concurrent,
+                    session.config.chunk_size / (1024 * 1024),
+                    session.config.large_file_mode,
+                ).await?;
+            }
+            librorum_cli::resume_transfer::TransferType::Download => {
+                println!("📥 恢复下载传输...");
+                handle_resume_download(
+                    server,
+                    &session.remote_path,
+                    &session.local_path,
+                    0,
+                    0,
+                ).await?;
+            }
+        }
+    } else {
+        println!("❌ 未找到可恢复的传输会话");
+    }
+
+    Ok(())
+}
+
+/// 列出传输会话
+async fn handle_list_sessions(include_completed: bool) -> Result<()> {
+    use librorum_cli::resume_transfer::ResumeManager;
+    use std::env;
+    
+    let sessions_dir = env::temp_dir().join("librorum_sessions");
+    let mut resume_manager = ResumeManager::new(&sessions_dir);
+    resume_manager.init().await?;
+
+    let sessions = resume_manager.list_sessions();
+    
+    if sessions.is_empty() {
+        println!("📭 没有找到传输会话");
+        return Ok(());
+    }
+
+    println!("📋 传输会话列表:\n");
+    println!("{:<16} {:<8} {:<20} {:<30} {:<10} {:<15}", 
+             "会话ID", "类型", "状态", "文件路径", "进度", "最后更新");
+    println!("{}", "-".repeat(110));
+
+    for session in sessions {
+        let is_completed = session.transferred_bytes >= session.total_size;
+        
+        if !include_completed && is_completed {
+            continue;
+        }
+
+        let transfer_type = match session.transfer_type {
+            librorum_cli::resume_transfer::TransferType::Upload => "上传",
+            librorum_cli::resume_transfer::TransferType::Download => "下载",
+        };
+
+        let status = if is_completed { "已完成" } else { "进行中" };
+        let progress = format!("{:.1}%", session.transferred_bytes as f64 / session.total_size as f64 * 100.0);
+        
+        let file_path = session.local_path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let updated_time = chrono::DateTime::from_timestamp(session.updated_at as i64, 0)
+            .map(|dt| dt.format("%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "未知".to_string());
+
+        println!("{:<16} {:<8} {:<20} {:<30} {:<10} {:<15}", 
+                 &session.session_id[..8],
+                 transfer_type,
+                 status,
+                 file_path,
+                 progress,
+                 updated_time);
+    }
+
+    Ok(())
+}
+
+/// 取消传输会话
+async fn handle_cancel_session(session_id: &str) -> Result<()> {
+    use librorum_cli::resume_transfer::ResumeManager;
+    use std::env;
+    
+    let sessions_dir = env::temp_dir().join("librorum_sessions");
+    let mut resume_manager = ResumeManager::new(&sessions_dir);
+    resume_manager.init().await?;
+
+    if resume_manager.get_session(session_id).is_some() {
+        resume_manager.cancel_session(session_id).await?;
+        println!("✅ 已取消传输会话: {}", session_id);
+    } else {
+        println!("❌ 未找到会话: {}", session_id);
+    }
+
+    Ok(())
+}
+
+/// 清理过期会话
+async fn handle_cleanup_sessions(max_age_days: u64) -> Result<()> {
+    use librorum_cli::resume_transfer::ResumeManager;
+    use std::env;
+    
+    let sessions_dir = env::temp_dir().join("librorum_sessions");
+    let mut resume_manager = ResumeManager::new(&sessions_dir);
+    resume_manager.init().await?;
+
+    println!("🧹 清理超过 {} 天的传输会话...", max_age_days);
+    resume_manager.cleanup_expired_sessions(max_age_days).await?;
+    println!("✅ 清理完成");
+
+    Ok(())
+}
+
+/// 处理高性能并发上传
+async fn handle_concurrent_upload(
+    server: &str,
+    file_path: &Path,
+    target_path: &str,
+    file_size: u64,
+    pool_size: usize,
+) -> Result<()> {
+    use librorum_cli::{
+        concurrent_transfer_client::{ConcurrentTransferClient, ConnectionPoolConfig, AdaptiveTransferConfig},
+        progress::UploadProgressDisplay,
+        get_data_portal_endpoint
+    };
+
+    println!("🚀 使用高性能并发传输模式上传: {} -> {} ({:.2} MB)", 
+             file_path.display(), target_path, file_size as f64 / (1024.0 * 1024.0));
+
+    // 通过gRPC查询Data Portal端点
+    let data_portal_endpoint = get_data_portal_endpoint(server).await?;
+    info!("Data Portal端点: {}", data_portal_endpoint);
+
+    // 创建连接池和传输配置
+    let pool_config = ConnectionPoolConfig {
+        max_connections: pool_size,
+        ..ConnectionPoolConfig::default()
+    };
+
+    let mut transfer_config = AdaptiveTransferConfig::default();
+    transfer_config.max_concurrency = pool_size;
+
+    // 创建高性能并发传输客户端
+    let client = ConcurrentTransferClient::new(data_portal_endpoint, pool_config, transfer_config);
+    
+    // 创建进度显示
+    let progress_display = UploadProgressDisplay::new();
+    let progress_callback = progress_display.create_callback();
+    
+    // 开始并发上传
+    let result = client.upload_file_concurrent(
+        file_path,
+        target_path,
+        Some(progress_callback),
+    ).await?;
+
+    // 显示完成信息和性能指标
+    progress_display.finish(&result);
+    
+    let metrics = client.get_metrics().await;
+    println!("📊 性能指标:");
+    println!("   当前吞吐量: {:.2} MB/s", metrics.current_throughput);
+    println!("   平均吞吐量: {:.2} MB/s", metrics.average_throughput);
+    println!("   平均延迟: {:.1} ms", metrics.average_latency);
+    println!("   活跃连接数: {}", metrics.active_connections);
+    println!("   内存使用: {:.1} MB", metrics.memory_usage as f64 / (1024.0 * 1024.0));
+
+    // 计算性能提升
+    let grpc_estimated_rate = 50.0; // 假设gRPC约50MB/s
+    if result.throughput_mbps > grpc_estimated_rate {
+        let improvement = (result.throughput_mbps / grpc_estimated_rate - 1.0) * 100.0;
+        println!("🚀 性能提升: 比gRPC快 {:.1}%", improvement);
+    }
+
+    Ok(())
+}
+
+/// 处理优化的文件上传
+async fn handle_optimized_upload(
+    server: &str,
+    file_path: &Path,
+    target_path: &str,
+    file_size: u64,
+    buffer_size_kb: usize,
+) -> Result<()> {
+    use librorum_cli::{
+        optimized_data_portal_client::{OptimizedDataPortalClient, OptimizedConfig},
+        progress::UploadProgressDisplay,
+        get_data_portal_endpoint
+    };
+
+    println!("⚡ 使用零拷贝优化传输模式上传: {} -> {} ({:.2} MB)", 
+             file_path.display(), target_path, file_size as f64 / (1024.0 * 1024.0));
+
+    // 通过gRPC查询Data Portal端点
+    let data_portal_endpoint = get_data_portal_endpoint(server).await?;
+    info!("Data Portal端点: {}", data_portal_endpoint);
+
+    // 创建优化配置
+    let mut config = OptimizedConfig::default();
+    config.buffer_size = buffer_size_kb * 1024; // 转换为字节
+    
+    // 创建优化的Data Portal客户端
+    let client = OptimizedDataPortalClient::new(data_portal_endpoint, config);
+    
+    // 创建进度显示
+    let progress_display = UploadProgressDisplay::new();
+    let progress_callback = progress_display.create_callback();
+    
+    // 开始优化上传
+    let result = client.upload_file_optimized(
+        file_path,
+        target_path,
+        Some(progress_callback),
+    ).await?;
+
+    // 显示完成信息
+    progress_display.finish(&result);
+
+    // 计算性能提升
+    let baseline_rate = 50.0; // 假设基线约50MB/s
+    if result.throughput_mbps > baseline_rate {
+        let improvement = (result.throughput_mbps / baseline_rate - 1.0) * 100.0;
+        println!("🚀 性能提升: 比基线快 {:.1}%", improvement);
+    }
+
+    Ok(())
+}
+
+/// 处理最高性能上传 (跳过哈希验证)
+async fn handle_max_performance_upload(
+    server: &str,
+    file_path: &Path,
+    target_path: &str,
+    file_size: u64,
+    buffer_size_kb: usize,
+) -> Result<()> {
+    use librorum_cli::{
+        optimized_data_portal_client::OptimizedDataPortalClient,
+        progress::UploadProgressDisplay,
+        get_data_portal_endpoint
+    };
+
+    println!("🚀 使用最高性能传输模式上传 (跳过哈希验证): {} -> {} ({:.2} MB)", 
+             file_path.display(), target_path, file_size as f64 / (1024.0 * 1024.0));
+
+    // 通过gRPC查询Data Portal端点
+    let data_portal_endpoint = get_data_portal_endpoint(server).await?;
+    info!("Data Portal端点: {}", data_portal_endpoint);
+    
+    // 创建最高性能模式客户端
+    let client = OptimizedDataPortalClient::with_max_performance(data_portal_endpoint, buffer_size_kb);
+    
+    // 创建进度显示
+    let progress_display = UploadProgressDisplay::new();
+    let progress_callback = progress_display.create_callback();
+    
+    // 开始最高性能上传
+    let result = client.upload_file_optimized(
+        file_path,
+        target_path,
+        Some(progress_callback),
+    ).await?;
+
+    // 显示完成信息
+    progress_display.finish(&result);
+
+    // 显示性能模式说明
+    println!("⚡ 最高性能模式: 跳过哈希验证以达到最大传输速度");
+    println!("⚠️  注意: 已禁用完整性验证，请在安全网络环境下使用");
+
+    Ok(())
+}
+
+/// 处理完全零拷贝上传 (极致性能，无协议开销)
+async fn handle_zero_copy_upload(
+    server: &str,
+    file_path: &Path,
+    target_path: &str,
+    file_size: u64,
+    buffer_size_kb: usize,
+) -> Result<()> {
+    use librorum_cli::{
+        zero_copy_client::{ZeroCopyClient, ZeroCopyConfig},
+        progress::UploadProgressDisplay,
+        get_zero_copy_endpoint
+    };
+
+    println!("🚀 使用完全零拷贝传输模式上传 (无序列化开销): {} -> {} ({:.2} MB)", 
+             file_path.display(), target_path, file_size as f64 / (1024.0 * 1024.0));
+
+    // 获取零拷贝Data Portal端点
+    let zero_copy_endpoint = get_zero_copy_endpoint(server)?;
+    info!("⚡ 零拷贝Data Portal端点: {}", zero_copy_endpoint);
+    
+    // 创建零拷贝配置
+    let mut config = ZeroCopyConfig::default();
+    config.chunk_size = buffer_size_kb * 1024;
+    
+    // 创建零拷贝客户端
+    let client = ZeroCopyClient::new(zero_copy_endpoint, config);
+    
+    // 创建进度显示
+    let progress_display = UploadProgressDisplay::new();
+    let progress_callback = progress_display.create_callback();
+    
+    // 开始零拷贝上传
+    let result = client.upload_file_zero_copy(
+        file_path,
+        target_path,
+        Some(progress_callback),
+    ).await?;
+
+    // 显示完成信息
+    progress_display.finish(&result);
+
+    // 显示性能模式说明
+    println!("🚀 完全零拷贝模式: 使用固定协议头和直接TCP传输");
+    println!("⚡ 极致性能: 无序列化开销，无中间数据拷贝");
+    println!("⚠️  注意: 已禁用所有验证以达到极致性能");
+
+    Ok(())
+}
+
+/// 处理优化的文件下载
+async fn handle_optimized_download(
+    server: &str,
+    remote: &str,
+    output: &Option<std::path::PathBuf>,
+    offset: u64,
+    length: u64,
+    buffer_size_kb: usize,
+) -> Result<()> {
+    use librorum_cli::{
+        optimized_data_portal_client::{OptimizedDataPortalClient, OptimizedConfig},
+        progress::DownloadProgressDisplay,
+        get_data_portal_endpoint
+    };
+
+    // 确定本地保存路径
+    let local_path = match output {
+        Some(path) => path.clone(),
+        None => {
+            let file_name = remote.split('/').last().unwrap_or("downloaded_file");
+            std::path::PathBuf::from(file_name)
+        }
+    };
+
+    println!("⚡ 使用零拷贝优化传输模式下载: {} -> {}", remote, local_path.display());
+
+    // 通过gRPC查询Data Portal端点
+    let data_portal_endpoint = get_data_portal_endpoint(server).await?;
+    info!("Data Portal端点: {}", data_portal_endpoint);
+
+    // 创建优化配置
+    let mut config = OptimizedConfig::default();
+    config.buffer_size = buffer_size_kb * 1024; // 转换为字节
+    
+    // 创建优化的Data Portal客户端
+    let client = OptimizedDataPortalClient::new(data_portal_endpoint, config);
+    
+    // 创建进度显示
+    let progress_display = DownloadProgressDisplay::new();
+    let progress_callback = progress_display.create_callback();
+    
+    // 开始优化下载
+    let result = client.download_file_optimized(
+        remote,
+        &local_path,
+        offset,
+        length,
+        Some(progress_callback),
+    ).await?;
+
+    // 显示完成信息
+    progress_display.finish(&result);
+
+    // 计算性能提升
+    let baseline_rate = 50.0; // 假设基线约50MB/s
+    if result.throughput_mbps > baseline_rate {
+        let improvement = (result.throughput_mbps / baseline_rate - 1.0) * 100.0;
+        println!("🚀 性能提升: 比基线快 {:.1}%", improvement);
+    }
+
+    Ok(())
+}
+
+/// 处理性能基准测试
+async fn handle_benchmark(
+    server: &str,
+    test_file: &Path,
+    iterations: u32,
+    concurrent: bool,
+    pool_size: usize,
+    optimized: bool,
+    buffer_size_kb: usize,
+    max_performance: bool,
+    zero_copy: bool,
+) -> Result<()> {
+    use librorum_cli::{
+        concurrent_transfer_client::PerformanceBenchmark,
+        optimized_data_portal_client::OptimizedBenchmark,
+        get_data_portal_endpoint, get_zero_copy_endpoint
+    };
+
+    println!("🏁 开始性能基准测试");
+    println!("📁 测试文件: {}", test_file.display());
+    println!("🔄 测试迭代: {} 次", iterations);
+    
+    if zero_copy {
+        println!("🚀 完全零拷贝模式: 启用 (无序列化开销)");
+        println!("🗄️ 块大小: {} KB", buffer_size_kb);
+        println!("⚠️  注意: 跳过所有验证以达到极致性能");
+    } else if max_performance {
+        println!("🚀 最高性能模式: 启用 (跳过哈希验证)");
+        println!("🗄️ 缓冲区大小: {} KB", buffer_size_kb);
+        println!("⚠️  注意: 已禁用完整性验证");
+    } else if optimized {
+        println!("⚡ 优化模式: 启用 (零拷贝)");
+        println!("🗄️ 缓冲区大小: {} KB", buffer_size_kb);
+    } else if concurrent {
+        println!("⚡ 并发模式: 启用");
+        println!("🔗 连接池大小: {}", pool_size);
+    } else {
+        println!("⚡ 传输模式: 常规");
+    }
+
+    // 检查测试文件是否存在
+    if !test_file.exists() {
+        return Err(anyhow::anyhow!("测试文件不存在: {:?}", test_file));
+    }
+
+    let metadata = tokio::fs::metadata(test_file).await?;
+    let file_size = metadata.len();
+    println!("📏 文件大小: {:.2} MB", file_size as f64 / (1024.0 * 1024.0));
+
+    if zero_copy {
+        // 获取零拷贝端点
+        let zero_copy_endpoint = get_zero_copy_endpoint(server)?;
+        info!("⚡ 零拷贝Data Portal端点: {}", zero_copy_endpoint);
+        
+        // 使用完全零拷贝模式进行基准测试
+        let benchmark = librorum_cli::zero_copy_client::ZeroCopyBenchmark::new(zero_copy_endpoint, buffer_size_kb);
+        let result = benchmark.run_benchmark(test_file, iterations).await?;
+        
+        println!("\n📊 基准测试结果 (完全零拷贝模式):");
+        println!("   测试迭代: {} 次", result.iterations);
+        println!("   平均吞吐量: {:.2} MB/s", result.avg_throughput);
+        println!("   最大吞吐量: {:.2} MB/s", result.max_throughput);
+        println!("   最小吞吐量: {:.2} MB/s", result.min_throughput);
+        println!("   吞吐量标准差: {:.2} MB/s", 
+                 (result.results.iter().map(|r| (r.throughput_mbps - result.avg_throughput).powi(2)).sum::<f64>() / result.iterations as f64).sqrt());
+    } else {
+        // 获取标准Data Portal端点
+        let data_portal_endpoint = get_data_portal_endpoint(server).await?;
+        info!("Data Portal端点: {}", data_portal_endpoint);
+        
+        if max_performance {
+        // 使用最高性能模式进行基准测试
+        let client = librorum_cli::optimized_data_portal_client::OptimizedDataPortalClient::with_max_performance(data_portal_endpoint, buffer_size_kb);
+        let mut results = Vec::new();
+        
+        for i in 0..iterations {
+            let remote_path = format!("/max_performance_benchmark_{}.bin", i);
+            let result = client.upload_file_optimized(test_file, &remote_path, None).await?;
+            println!("第 {} 次测试完成: {:.2} MB/s", i + 1, result.throughput_mbps);
+            results.push(result);
+        }
+        
+        let avg_throughput = results.iter().map(|r| r.throughput_mbps).sum::<f64>() / results.len() as f64;
+        let max_throughput = results.iter().map(|r| r.throughput_mbps).fold(0.0f64, f64::max);
+        let min_throughput = results.iter().map(|r| r.throughput_mbps).fold(f64::INFINITY, f64::min);
+        
+        println!("\n📊 基准测试结果 (最高性能模式):");
+        println!("   测试迭代: {} 次", iterations);
+        println!("   平均吞吐量: {:.2} MB/s", avg_throughput);
+        println!("   最大吞吐量: {:.2} MB/s", max_throughput);
+        println!("   最小吞吐量: {:.2} MB/s", min_throughput);
+        println!("   吞吐量标准差: {:.2} MB/s", 
+                 (results.iter().map(|r| (r.throughput_mbps - avg_throughput).powi(2)).sum::<f64>() / iterations as f64).sqrt());
+    } else if optimized {
+        // 使用优化模式进行基准测试
+        let benchmark = OptimizedBenchmark::new(data_portal_endpoint);
+        let result = benchmark.run_benchmark(test_file, iterations).await?;
+        
+        println!("\n📊 基准测试结果 (优化模式):");
+        println!("   测试迭代: {} 次", result.iterations);
+        println!("   平均吞吐量: {:.2} MB/s", result.avg_throughput);
+        println!("   最大吞吐量: {:.2} MB/s", result.max_throughput);
+        println!("   最小吞吐量: {:.2} MB/s", result.min_throughput);
+        println!("   吞吐量标准差: {:.2} MB/s", 
+                 (result.results.iter().map(|r| (r.throughput_mbps - result.avg_throughput).powi(2)).sum::<f64>() / result.iterations as f64).sqrt());
+    } else if concurrent {
+        // 使用高性能并发模式进行基准测试
+        let benchmark = PerformanceBenchmark::new(data_portal_endpoint);
+        let result = benchmark.run_benchmark(test_file, iterations).await?;
+        
+        println!("\n📊 基准测试结果:");
+        println!("   测试迭代: {} 次", result.iterations);
+        println!("   平均吞吐量: {:.2} MB/s", result.avg_throughput);
+        println!("   最大吞吐量: {:.2} MB/s", result.max_throughput);
+        println!("   最小吞吐量: {:.2} MB/s", result.min_throughput);
+        println!("   吞吐量标准差: {:.2} MB/s", 
+                 (result.results.iter().map(|r| (r.throughput_mbps - result.avg_throughput).powi(2)).sum::<f64>() / result.iterations as f64).sqrt());
+    } else {
+        // 使用常规模式进行基准测试
+        println!("\n🔄 使用常规传输模式进行基准测试...");
+        let mut throughputs = Vec::new();
+        
+        for i in 0..iterations {
+            let remote_path = format!("/benchmark_regular_{}.bin", i);
+            
+            let start_time = std::time::Instant::now();
+            handle_regular_upload(server, test_file, &remote_path, file_size).await?;
+            let duration = start_time.elapsed();
+            
+            let throughput = (file_size as f64) / (1024.0 * 1024.0) / duration.as_secs_f64();
+            throughputs.push(throughput);
+            
+            println!("第 {} 次测试完成: {:.2} MB/s", i + 1, throughput);
+        }
+        
+        let avg_throughput = throughputs.iter().sum::<f64>() / throughputs.len() as f64;
+        let max_throughput = throughputs.iter().fold(0.0f64, |a, &b| a.max(b));
+        let min_throughput = throughputs.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        
+        println!("\n📊 基准测试结果 (常规模式):");
+        println!("   测试迭代: {} 次", iterations);
+        println!("   平均吞吐量: {:.2} MB/s", avg_throughput);
+        println!("   最大吞吐量: {:.2} MB/s", max_throughput);
+        println!("   最小吞吐量: {:.2} MB/s", min_throughput);
+    }
+    }
+
+    println!("✅ 基准测试完成");
+    Ok(())
+}
+
+/// 处理错误处理和重试机制测试
+async fn handle_error_handling_test(server: &str) -> Result<()> {
+    use librorum_cli::{get_zero_copy_endpoint, error_handling_test::test_zero_copy_resilience};
+    
+    println!("🧪 开始错误处理和重试机制测试...");
+    
+    // 获取零拷贝端点
+    let zero_copy_endpoint = get_zero_copy_endpoint(server)?;
+    println!("🔗 零拷贝端点: {}", zero_copy_endpoint);
+    
+    // 运行弹性测试
+    test_zero_copy_resilience(zero_copy_endpoint).await?;
+    
+    println!("✅ 错误处理测试完成");
     Ok(())
 }
