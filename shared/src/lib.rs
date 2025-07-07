@@ -7,7 +7,6 @@ pub mod zero_copy_server;
 
 // Re-export commonly used types
 pub use config::NodeConfig;
-pub use zero_copy_server::ZeroCopyDataPortalServer;
 
 // Re-export gRPC generated code
 pub use proto::*;
