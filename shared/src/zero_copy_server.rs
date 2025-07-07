@@ -378,17 +378,14 @@ impl ZeroCopyDataPortalServer {
             }
         }
         
-        info!("🔚 零拷贝连接处理完成");
+        // 清理资源
+        if let Some(mut file_writer) = current_file.take() {
+            if let Err(e) = file_writer.flush().await {
+                warn!("连接关闭时刷新文件失败: {}", e);
+            }
+        }
+        
+        info!("🔌 零拷贝连接处理完成");
         Ok(())
-    }
-    
-    /// 获取绑定地址
-    pub fn bind_addr(&self) -> SocketAddr {
-        self.bind_addr
-    }
-    
-    /// 检查服务器是否在运行
-    pub fn is_running(&self) -> bool {
-        self.listener.is_some()
     }
 }

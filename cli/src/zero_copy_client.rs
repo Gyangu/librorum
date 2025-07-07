@@ -126,19 +126,6 @@ impl ZeroCopyHeader {
     }
 }
 
-/// 零拷贝配置
-#[derive(Debug, Clone)]
-pub struct ZeroCopyConfig {
-    /// 文件块大小 - 优化的I/O块大小
-    pub chunk_size: usize,
-    /// TCP NodeDelay设置
-    pub tcp_nodelay: bool,
-    /// 进度更新间隔
-    pub progress_interval: Duration,
-    /// 重试配置
-    pub retry_config: RetryConfig,
-}
-
 /// 重试配置
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
@@ -167,6 +154,19 @@ impl Default for RetryConfig {
             io_timeout: Duration::from_secs(60),
         }
     }
+}
+
+/// 零拷贝配置
+#[derive(Debug, Clone)]
+pub struct ZeroCopyConfig {
+    /// 文件块大小 - 优化的I/O块大小
+    pub chunk_size: usize,
+    /// TCP NodeDelay设置
+    pub tcp_nodelay: bool,
+    /// 进度更新间隔
+    pub progress_interval: Duration,
+    /// 重试配置
+    pub retry_config: RetryConfig,
 }
 
 impl Default for ZeroCopyConfig {
