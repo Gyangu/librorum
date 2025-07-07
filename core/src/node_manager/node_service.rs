@@ -514,7 +514,7 @@ impl NodeService for NodeServiceImpl {
             host: host.to_string(),
             port: data_portal_port,
             available: true, // 目前总是可用
-            protocol: "universal-transport".to_string(),
+            protocol: "data-portal".to_string(),
         };
         
         info!("返回Data Portal端点: {}:{} ({})", host, data_portal_port, response.protocol);

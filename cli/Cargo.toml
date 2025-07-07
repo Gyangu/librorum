@@ -47,10 +47,10 @@ dirs = "5.0.1"
 which = "4.4.2"
 url = "2.5.0"
 
-# Universal Transport for high-performance file transfers
-universal-transport-core = { path = "../universal-transport/rust/core" }
-universal-transport-shared-memory = { path = "../universal-transport/rust/shared-memory" }
-universal-transport-network = { path = "../universal-transport/rust/network" }
+# Data Portal for high-performance file transfers
+data-portal-core = { path = "../data-portal/rust/core" }
+data-portal-shared-memory = { path = "../data-portal/rust/shared-memory" }
+data-portal-network = { path = "../data-portal/rust/network" }
 
 # Serialization for UTP protocol
 bincode = "1.3.3"

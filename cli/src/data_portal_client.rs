@@ -12,7 +12,7 @@ use bytes::{BytesMut, Bytes};
 use tracing::info;
 use uuid::Uuid;
 
-use universal_transport_core::{
+use data_portal_core::{
     TransportManager, TransportType, NodeInfo, Language,
     manager::TransportManagerConfig,
     UniversalTransport,

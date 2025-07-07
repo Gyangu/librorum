@@ -1,1 +1,0 @@
-/Users/gy/librorum/universal-transport/target/debug/examples/cross_language_test: /Users/gy/librorum/universal-transport/examples/cross_language_test.rs /Users/gy/librorum/universal-transport/src/lib.rs

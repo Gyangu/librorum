@@ -6,7 +6,7 @@ use tokio::io::{AsyncReadExt, BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
-use universal_transport_core::{TransportManager, TransportManagerConfig, TransportType};
+use data_portal_core::{TransportManager, TransportManagerConfig, TransportType};
 
 /// 文件传输协议消息
 #[derive(Debug, Clone, Serialize, Deserialize)]
