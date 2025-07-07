@@ -19,10 +19,10 @@ This project consists of **two separate Git repositories**:
    - Remote: `https://github.com/Gyangu/librorum.git`
    - Contains: Core distributed file system components (shared, core, cli, client)
    
-2. **Transport Protocol Repository**: `/Users/gy/librorum/universal-transport/`
-   - Remote: `https://github.com/Gyangu/universal-transport.git`
+2. **Data Portal Repository**: `/Users/gy/librorum/data-portal/`
+   - Remote: `https://github.com/Gyangu/data-portal.git`
    - Contains: Data Portal high-performance transport protocol implementation
-   - **This is an independent repository**, NOT a git submodule
+   - **This is a git submodule** of the main repository
 
 ### 🔧 Development Workflow:
 ```bash
@@ -30,18 +30,24 @@ This project consists of **two separate Git repositories**:
 git add . && git commit -m "Update librorum code"
 git push origin main
 
-# Working with transport protocol (must cd first)
-cd universal-transport/
-git add . && git commit -m "Update transport protocol"
+# Working with data-portal submodule
+cd data-portal/
+git add . && git commit -m "Update data portal protocol"
 git push origin main
 cd ..
+
+# Update submodule reference in main repo
+git add data-portal
+git commit -m "Update data-portal submodule reference"
+git push origin main
 ```
 
 ### ⚠️ Important Notes:
 - **Always check which repository you're in** before committing
-- Changes to `universal-transport/` require separate commits to its own repository
-- The librorum project imports and uses universal-transport as a local dependency
+- Changes to `data-portal/` require separate commits to its own repository
+- The librorum project uses data-portal as a git submodule
 - Both repositories must be managed independently
+- Use `git submodule update --remote` to update submodule to latest version
 
 ## Build Commands
 

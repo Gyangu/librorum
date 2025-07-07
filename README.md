@@ -134,10 +134,11 @@ graph TB
 
 ```
 librorum/
-├── 🗂️ shared/                  # 共享库 (gRPC协议、配置管理、工具函数)
+├── 🗂️ shared/                  # 共享库 (gRPC协议、配置管理、Data Portal)
 │   ├── src/
 │   │   ├── 🔌 proto/            # gRPC 协议定义
 │   │   ├── 🔧 config.rs         # 配置管理
+│   │   ├── 🚀 data_portal.rs    # Data Portal 零拷贝传输
 │   │   └── 🛠️ utils.rs          # 通用工具函数
 │   └── 📦 Cargo.toml
 ├── 🦀 core/                     # Rust 高性能守护进程
@@ -161,6 +162,12 @@ librorum/
 │   └── 🖥️ Core/                # gRPC 通信核心
 ├── 📚 docs/                     # 完整技术文档
 ├── 🧪 examples/                 # 示例代码
+├── 📦 data-portal/              # Data Portal 高性能传输协议 (submodule)
+│   ├── rust/                    # Rust 实现
+│   │   ├── core/                # 核心传输引擎
+│   │   ├── network/             # TCP/UDP 网络传输
+│   │   └── shared-memory/       # 共享内存传输
+│   └── swift/                   # Swift 客户端
 └── 📄 *.md                     # 项目文档
 ```
 
@@ -301,9 +308,9 @@ prefetch_enabled = true
 
 ### ⚡ 性能基准测试
 
-#### 🚀 零拷贝通用传输协议
+#### 🚀 零拷贝Data Portal协议
 
-**Librorum CLI** 已全面迁移至 **Universal Transport Protocol** 并实现零拷贝优化，大幅提升文件传输性能。
+**Librorum CLI** 已全面迁移至 **Data Portal Protocol** 并实现零拷贝优化，大幅提升文件传输性能。采用gRPC端点协商 + Data Portal高性能传输的混合架构。
 
 #### 📊 实际性能结果 (零拷贝 Data Portal 实现)
 
@@ -436,10 +443,11 @@ graph TB
 
 ```
 librorum/
-├── 🗂️ shared/                  # Shared library (gRPC protocols, config, utilities)
+├── 🗂️ shared/                  # Shared library (gRPC protocols, config, Data Portal)
 │   ├── src/
 │   │   ├── 🔌 proto/            # gRPC protocol definitions
 │   │   ├── 🔧 config.rs         # Configuration management
+│   │   ├── 🚀 data_portal.rs    # Data Portal zero-copy transport
 │   │   └── 🛠️ utils.rs          # Common utility functions
 │   └── 📦 Cargo.toml
 ├── 🦀 core/                     # Rust high-performance daemon
@@ -463,6 +471,12 @@ librorum/
 │   └── 🖥️ Core/                # gRPC communication core
 ├── 📚 docs/                     # Complete technical documentation
 ├── 🧪 examples/                 # Example code
+├── 📦 data-portal/              # Data Portal high-performance transport protocol (submodule)
+│   ├── rust/                    # Rust implementation
+│   │   ├── core/                # Core transport engine
+│   │   ├── network/             # TCP/UDP network transport
+│   │   └── shared-memory/       # Shared memory transport
+│   └── swift/                   # Swift client
 └── 📄 *.md                     # Project documentation
 ```
 
@@ -605,9 +619,9 @@ prefetch_enabled = true
 
 ## ⚡ Performance Benchmarks
 
-### 🚀 Zero-Copy Universal Transport Protocol
+### 🚀 Zero-Copy Data Portal Protocol
 
-**Librorum CLI** 已全面迁移至 **Universal Transport Protocol** 并实现零拷贝优化，大幅提升文件传输性能。
+**Librorum CLI** has fully migrated to **Data Portal Protocol** with zero-copy optimization, dramatically improving file transfer performance. Uses a hybrid architecture with gRPC endpoint negotiation + Data Portal high-performance transport.
 
 #### 📊 Actual Performance Results (Zero-Copy Data Portal Implementation)
 

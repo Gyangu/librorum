@@ -27,6 +27,15 @@ Cargo.lock
 
 # Log files
 *.log
+daemon*.log
+
+# Test and temporary files
+test_*.txt
+test_*.bin
+test_*.dat
+test_*.sh
+temp_*/
+temp_icon/
 
 # System files
 .DS_Store
