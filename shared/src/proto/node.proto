@@ -17,6 +17,9 @@ service NodeService {
   
   // 移除节点
   rpc RemoveNode (RemoveNodeRequest) returns (RemoveNodeResponse);
+  
+  // 获取Data Portal端点
+  rpc GetDataPortalEndpoint (DataPortalEndpointRequest) returns (DataPortalEndpointResponse);
 }
 
 // 心跳请求
@@ -104,4 +107,17 @@ message RemoveNodeRequest {
 message RemoveNodeResponse {
   bool success = 1;             // 是否成功
   string message = 2;           // 响应消息
+}
+
+// Data Portal端点请求
+message DataPortalEndpointRequest {
+  // 空请求
+}
+
+// Data Portal端点响应
+message DataPortalEndpointResponse {
+  string host = 1;              // Data Portal主机地址
+  int32 port = 2;               // Data Portal端口
+  bool available = 3;           // 是否可用
+  string protocol = 4;          // 协议类型 ("universal-transport")
 } 

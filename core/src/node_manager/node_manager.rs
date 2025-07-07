@@ -1,4 +1,4 @@
-use librorum_shared::NodeConfig;
+use librorum_shared::{NodeConfig, DataPortalServer};
 use crate::proto::file::file_service_server::FileServiceServer;
 use crate::proto::log::log_service_server::LogServiceServer;
 use crate::proto::node::node_service_server::NodeServiceServer;
@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 use tokio::task;
 use tokio::time::interval;
 use tonic::transport::Server;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::node_manager::file_service::FileServiceImpl;
 use crate::node_manager::log_service::LogServiceImpl;
@@ -268,15 +268,50 @@ impl NodeManager {
         let log_service = LogServiceImpl::new();
         log_service.init_sample_logs().await;
 
-        // 启动gRPC服务器
-        info!("启动gRPC服务器: {}", addr);
-        Server::builder()
-            .add_service(NodeServiceServer::new(node_service))
-            .add_service(FileServiceServer::new(file_service))
-            .add_service(LogServiceServer::new(log_service))
-            .serve(addr)
-            .await
-            .with_context(|| format!("gRPC服务器启动失败: {}", addr))?;
+        // 计算 Data Portal 端口 (gRPC 端口 + 1)
+        let data_portal_port = port + 1;
+        
+        // 启动 Data Portal 服务器任务
+        let data_portal_task = tokio::spawn(async move {
+            info!("启动Data Portal服务器: 0.0.0.0:{}", data_portal_port);
+            
+            // 使用共享库中的 Data Portal 服务器
+            let mut data_portal_server = DataPortalServer::with_port(data_portal_port);
+            
+            match data_portal_server.run().await {
+                Ok(_) => {
+                    info!("Data Portal服务器正常退出");
+                },
+                Err(e) => {
+                    error!("Data Portal服务器运行失败: {}", e);
+                }
+            }
+        });
+
+        // 启动gRPC服务器任务
+        let grpc_task = tokio::spawn(async move {
+            info!("启动gRPC服务器: {}", addr);
+            let result = Server::builder()
+                .add_service(NodeServiceServer::new(node_service))
+                .add_service(FileServiceServer::new(file_service))
+                .add_service(LogServiceServer::new(log_service))
+                .serve(addr)
+                .await;
+            
+            if let Err(e) = result {
+                error!("gRPC服务器启动失败: {}", e);
+            }
+        });
+
+        // 等待任一服务器退出
+        tokio::select! {
+            _ = data_portal_task => {
+                warn!("Data Portal服务器退出");
+            },
+            _ = grpc_task => {
+                warn!("gRPC服务器退出");
+            }
+        }
 
         Ok(())
     }

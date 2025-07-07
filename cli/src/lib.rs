@@ -7,6 +7,7 @@ use tonic::transport::Channel;
 
 // Data Portal客户端模块
 pub mod data_portal_client;
+pub mod simple_data_portal_client;
 
 /// librorum 分布式文件系统命令行工具
 #[derive(Parser, Debug, PartialEq)]
@@ -204,7 +205,30 @@ pub async fn try_connect_to_file_service(server: &str) -> Result<librorum_shared
     Ok(client)
 }
 
-/// 解析服务器地址，提取Data Portal端点
+/// 通过 gRPC 查询 Data Portal 端点
+pub async fn get_data_portal_endpoint(server: &str) -> Result<std::net::SocketAddr> {
+    use librorum_shared::proto::node::{DataPortalEndpointRequest};
+    
+    // 首先连接到 gRPC 服务
+    let mut client = try_connect_to_core(server).await?;
+    
+    // 查询 Data Portal 端点
+    let request = tonic::Request::new(DataPortalEndpointRequest {});
+    let response = client.get_data_portal_endpoint(request).await
+        .with_context(|| "无法查询Data Portal端点")?;
+    
+    let endpoint_info = response.into_inner();
+    
+    if !endpoint_info.available {
+        return Err(anyhow::anyhow!("Data Portal 服务不可用"));
+    }
+    
+    let addr_str = format!("{}:{}", endpoint_info.host, endpoint_info.port);
+    addr_str.parse()
+        .with_context(|| format!("无法解析Data Portal地址: {}", addr_str))
+}
+
+/// 解析服务器地址，提取Data Portal端点 (已弃用，保留向后兼容)
 pub fn parse_data_portal_endpoint(server: &str) -> Result<std::net::SocketAddr> {
     let url = url::Url::parse(server)
         .with_context(|| format!("无效的服务器地址: {}", server))?;
@@ -212,7 +236,7 @@ pub fn parse_data_portal_endpoint(server: &str) -> Result<std::net::SocketAddr> 
     let host = url.host_str()
         .ok_or_else(|| anyhow::anyhow!("服务器地址必须包含主机名"))?;
     
-    // Data Portal默认使用gRPC端口+1
+    // Data Portal默认使用gRPC端口+1 (回退机制)
     let grpc_port = url.port().unwrap_or(50051);
     let data_portal_port = grpc_port + 1;
     

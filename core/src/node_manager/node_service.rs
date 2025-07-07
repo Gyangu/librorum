@@ -5,6 +5,7 @@ use crate::proto::node::{
     SystemHealthRequest, SystemHealthResponse,
     AddNodeRequest, AddNodeResponse,
     RemoveNodeRequest, RemoveNodeResponse,
+    DataPortalEndpointRequest, DataPortalEndpointResponse,
 };
 use chrono::Utc;
 use std::collections::HashMap;
@@ -485,6 +486,38 @@ impl NodeService for NodeServiceImpl {
             }
         };
         
+        Ok(Response::new(response))
+    }
+
+    async fn get_data_portal_endpoint(
+        &self,
+        _request: Request<DataPortalEndpointRequest>,
+    ) -> Result<Response<DataPortalEndpointResponse>, Status> {
+        info!("收到Data Portal端点查询请求");
+        
+        // 解析当前节点的地址获取主机名
+        let host = if let Some(colon_pos) = self.address.rfind(':') {
+            &self.address[..colon_pos]
+        } else {
+            "127.0.0.1" // 默认回退
+        };
+        
+        // Data Portal 使用 gRPC 端口 + 1
+        let grpc_port = if let Some(colon_pos) = self.address.rfind(':') {
+            self.address[colon_pos + 1..].parse::<i32>().unwrap_or(50051)
+        } else {
+            50051
+        };
+        let data_portal_port = grpc_port + 1;
+        
+        let response = DataPortalEndpointResponse {
+            host: host.to_string(),
+            port: data_portal_port,
+            available: true, // 目前总是可用
+            protocol: "universal-transport".to_string(),
+        };
+        
+        info!("返回Data Portal端点: {}:{} ({})", host, data_portal_port, response.protocol);
         Ok(Response::new(response))
     }
 }

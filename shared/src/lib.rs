@@ -2,6 +2,7 @@ pub mod config;
 pub mod proto;
 pub mod utils;
 pub mod transport;
+pub mod data_portal;
 
 // Re-export commonly used types
 pub use config::NodeConfig;
@@ -20,4 +21,9 @@ pub use transport::{
 pub use transport::{
     server::{UtpServer, ServerStatus},
     client::{UtpClient, UploadResult, DownloadResult, ConnectionStatus},
+};
+
+// Re-export Data Portal components
+pub use data_portal::{
+    DataPortalServer, DataPortalClient, DataPortalConfig,
 };

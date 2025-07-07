@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::Instant;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
-use bytes::BytesMut;
+use bytes::{BytesMut, Bytes};
 use tracing::info;
 use uuid::Uuid;
 
@@ -150,7 +150,7 @@ impl DataPortalClient {
             let chunk = FileChunk {
                 session_id: session_id.to_string(),
                 chunk_id,
-                data: final_data.to_vec(), // 只在最后序列化时才拷贝
+                data: final_data, // 零拷贝使用 Bytes
                 is_final: bytes_read < config.chunk_size,
             };
 
@@ -235,7 +235,7 @@ impl DataPortalClient {
                 decompress_data_zerocopy(&chunk.data)?
             } else {
                 // 直接使用Bytes，避免拷贝
-                bytes::Bytes::from(chunk.data)
+                chunk.data
             };
 
             // 高效写入，避免不必要的拷贝
@@ -289,7 +289,8 @@ struct FileHeader {
 struct FileChunk {
     session_id: String,
     chunk_id: u32,
-    data: Vec<u8>,
+    #[serde(serialize_with = "serialize_bytes", deserialize_with = "deserialize_bytes")]
+    data: Bytes,
     is_final: bool,
 }
 
@@ -334,12 +335,30 @@ fn compress_data_zerocopy(data: &bytes::Bytes) -> Result<bytes::Bytes> {
 }
 
 /// 零拷贝解压函数（使用Bytes）
-fn decompress_data_zerocopy(data: &[u8]) -> Result<bytes::Bytes> {
+fn decompress_data_zerocopy(data: &Bytes) -> Result<bytes::Bytes> {
     use flate2::read::ZlibDecoder;
     use std::io::Read;
+    use std::io::Cursor;
     
-    let mut decoder = ZlibDecoder::new(data);
+    let mut decoder = ZlibDecoder::new(Cursor::new(&data[..]));
     let mut decompressed = Vec::new();
     decoder.read_to_end(&mut decompressed)?;
     Ok(bytes::Bytes::from(decompressed))
+}
+
+/// 自定义 Bytes 序列化
+fn serialize_bytes<S>(bytes: &Bytes, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serde_bytes::serialize(&bytes[..], serializer)
+}
+
+/// 自定义 Bytes 反序列化
+fn deserialize_bytes<'de, D>(deserializer: D) -> Result<Bytes, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let vec: Vec<u8> = serde_bytes::deserialize(deserializer)?;
+    Ok(Bytes::from(vec))
 }

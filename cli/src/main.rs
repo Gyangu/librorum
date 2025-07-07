@@ -1,14 +1,13 @@
 use anyhow::Result;
 use clap::Parser;
 use librorum_cli::{
-    Cli, Command, try_connect_to_core, try_connect_to_file_service, parse_data_portal_endpoint, 
+    Cli, Command, try_connect_to_core, try_connect_to_file_service, get_data_portal_endpoint, 
     load_config, find_core_binary, validate_server_address,
-    data_portal_client::{DataPortalClient, TransferConfig}
+    simple_data_portal_client::SimpleDataPortalClient
 };
 use librorum_shared::NodeConfig;
 use tracing::{error, info};
 use std::path::Path;
-use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -239,159 +238,46 @@ async fn handle_upload(
     println!("📤 使用Data Portal上传文件: {} -> {} ({} bytes)", 
              file_path.display(), target_path, file_size);
 
-    // 解析Data Portal端点
-    let data_portal_endpoint = parse_data_portal_endpoint(server)?;
+    // 通过gRPC查询Data Portal端点
+    let data_portal_endpoint = get_data_portal_endpoint(server).await?;
     info!("Data Portal端点: {}", data_portal_endpoint);
 
-    // 创建Data Portal客户端
-    let mut client = DataPortalClient::new()?;
+    // 创建简化的Data Portal客户端
+    let client = SimpleDataPortalClient::new(data_portal_endpoint);
     
-    // 配置传输参数
-    let config = TransferConfig {
-        mode: universal_transport_core::TransportType::Universal,
-        chunk_size: if file_size < 5 * 1024 * 1024 { 
-            1024 * 1024 // 1MB for small files
-        } else if file_size < 50 * 1024 * 1024 { 
-            4 * 1024 * 1024 // 4MB for medium files
-        } else { 
-            8 * 1024 * 1024 // 8MB for large files
-        },
-        enable_compression: compress,
-        timeout_secs: 300,
-    };
-
-    // 生成会话ID
-    let session_id = Uuid::new_v4().to_string();
-
-    // 创建进度回调
-    let last_update = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-    let progress_callback = {
-        let last_update = last_update.clone();
-        move |transferred: u64, total: u64, rate: f64| {
-            let now = std::time::Instant::now();
-            let mut last_time = last_update.lock().unwrap();
-            if now.duration_since(*last_time).as_millis() > 100 {
-                let percentage = (transferred as f64 / total as f64) * 100.0;
-                print!("\r📊 上传进度: {}/{} bytes ({:.1}%) - {:.2} MB/s", 
-                       transferred, total, percentage, rate);
-                use std::io::Write;
-                std::io::stdout().flush().unwrap();
-                *last_time = now;
-            }
-        }
-    };
-
     // 开始上传
-    let start_time = std::time::Instant::now();
-    let metrics = client.upload_file(
+    let result = client.upload_file(
         file_path,
-        data_portal_endpoint,
-        &session_id,
-        config,
-        Some(Box::new(progress_callback))
+        &target_path,
     ).await?;
 
     println!(); // 新行
     println!("✅ Data Portal上传完成!");
     println!("  📊 传输统计:");
-    println!("    文件大小: {} bytes", metrics.bytes_transferred);
-    println!("    传输时间: {:.2} 秒", metrics.duration_secs);
-    println!("    平均速度: {:.2} MB/s", metrics.average_rate_mbps);
-    println!("    传输模式: {:?}", metrics.transport_mode);
-    println!("    启用压缩: {}", metrics.compression_enabled);
-    println!("    数据块数: {}", metrics.chunk_count);
+    println!("    文件大小: {} bytes", result.bytes_transferred);
+    println!("    传输时间: {:.2} 秒", result.duration.as_secs_f64());
+    println!("    平均速度: {:.2} MB/s", result.throughput_mbps);
 
     // 计算性能提升
     let grpc_estimated_rate = 50.0; // 假设gRPC约50MB/s
-    if metrics.average_rate_mbps > grpc_estimated_rate {
-        let improvement = (metrics.average_rate_mbps / grpc_estimated_rate - 1.0) * 100.0;
+    if result.throughput_mbps > grpc_estimated_rate {
+        let improvement = (result.throughput_mbps / grpc_estimated_rate - 1.0) * 100.0;
         println!("  🚀 性能提升: 比gRPC快 {:.1}%", improvement);
     }
 
     Ok(())
 }
 
-/// 处理文件下载 - 使用Data Portal
+/// 处理文件下载 - 使用Data Portal (暂未实现)
 async fn handle_download(
-    server: &str,
-    remote: &str,
-    output: &Option<std::path::PathBuf>,
-    offset: u64,
-    length: u64,
+    _server: &str,
+    _remote: &str,
+    _output: &Option<std::path::PathBuf>,
+    _offset: u64,
+    _length: u64,
 ) -> Result<()> {
-    // 确定输出文件路径
-    let output_path = if let Some(path) = output {
-        path.clone()
-    } else {
-        // 从远程路径提取文件名
-        let file_name = remote.rsplit('/').next().unwrap_or("downloaded_file");
-        Path::new(file_name).to_path_buf()
-    };
-
-    println!("📥 使用Data Portal下载文件: {} -> {}", remote, output_path.display());
-    
-    // 解析Data Portal端点
-    let data_portal_endpoint = parse_data_portal_endpoint(server)?;
-    info!("Data Portal端点: {}", data_portal_endpoint);
-
-    // 创建Data Portal客户端
-    let mut client = DataPortalClient::new()?;
-    
-    // 配置传输参数
-    let config = TransferConfig {
-        mode: universal_transport_core::TransportType::Universal,
-        chunk_size: 4 * 1024 * 1024, // 4MB chunks for download
-        enable_compression: false, // 让服务器决定是否压缩
-        timeout_secs: 300,
-    };
-
-    // 生成会话ID
-    let session_id = Uuid::new_v4().to_string();
-
-    // 创建进度回调
-    let last_update = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-    let progress_callback = {
-        let last_update = last_update.clone();
-        move |transferred: u64, total: u64, rate: f64| {
-            let now = std::time::Instant::now();
-            let mut last_time = last_update.lock().unwrap();
-            if now.duration_since(*last_time).as_millis() > 100 {
-                let percentage = (transferred as f64 / total as f64) * 100.0;
-                print!("\r📊 下载进度: {}/{} bytes ({:.1}%) - {:.2} MB/s", 
-                       transferred, total, percentage, rate);
-                use std::io::Write;
-                std::io::stdout().flush().unwrap();
-                *last_time = now;
-            }
-        }
-    };
-
-    // 开始下载
-    let metrics = client.download_file(
-        data_portal_endpoint,
-        &session_id,
-        &output_path,
-        config,
-        Some(Box::new(progress_callback))
-    ).await?;
-
-    println!(); // 新行
-    println!("✅ Data Portal下载完成!");
-    println!("  📊 传输统计:");
-    println!("    文件大小: {} bytes", metrics.bytes_transferred);
-    println!("    传输时间: {:.2} 秒", metrics.duration_secs);
-    println!("    平均速度: {:.2} MB/s", metrics.average_rate_mbps);
-    println!("    传输模式: {:?}", metrics.transport_mode);
-    println!("    保存位置: {}", output_path.display());
-
-    // 计算性能提升
-    let grpc_estimated_rate = 50.0; // 假设gRPC约50MB/s
-    if metrics.average_rate_mbps > grpc_estimated_rate {
-        let improvement = (metrics.average_rate_mbps / grpc_estimated_rate - 1.0) * 100.0;
-        println!("  🚀 性能提升: 比gRPC快 {:.1}%", improvement);
-    }
-
-    Ok(())
+    println!("❌ 下载功能暂未实现");
+    Err(anyhow::anyhow!("下载功能暂未实现"))
 }
 
 /// 处理文件列表
