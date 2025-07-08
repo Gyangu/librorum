@@ -10,14 +10,12 @@ use serde::{Deserialize, Serialize};
 pub mod manager;
 pub mod index;
 pub mod consistency;
-pub mod database;
 pub mod sled_manager;
 
 #[cfg(test)]
 pub mod performance_tests;
 
 pub use manager::SimpleMetadataManager;
-pub use database::DatabaseMetadataManager;
 pub use sled_manager::SledMetadataManager;
 pub use index::{IndexStore, FileIndex};
 pub use consistency::ConsistencyManager;

@@ -58,7 +58,7 @@ graph TB
 
     %% 基础设施层
     subgraph "基础设施层"
-        Database[(数据库<br/>Sled)]
+        Database[(Sled数据库<br/>纯Rust实现)]
         LocalStorage[(本地存储)]
         Memory[(内存缓存)]
         Network[网络通信]
