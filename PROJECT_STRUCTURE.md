@@ -13,7 +13,8 @@ librorum/
 ├── 🏗️  shared/                  # 共享库（gRPC、协议、工具）
 │   ├── src/
 │   │   ├── config.rs           # 配置管理
-│   │   ├── transport/          # Data Portal 传输协议
+│   │   ├── data_portal.rs      # Data Portal 传输协议
+│   │   ├── zero_copy_server.rs # 零拷贝传输服务器
 │   │   └── proto/             # gRPC 协议定义
 │   └── Cargo.toml
 │

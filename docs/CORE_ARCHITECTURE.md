@@ -1,6 +1,6 @@
 # 🏗️ Librorum Core Daemon 架构设计
 
-> 版本: v1.0  
+> 版本: v2.0  
 > 更新时间: 2025-01-08  
 > 作者: Claude AI
 
@@ -35,7 +35,6 @@ graph TB
         gRPC_Server[gRPC服务器<br/>端口: 50051]
         DataPortal_Server[Data Portal服务器<br/>端口: 50052]
         ZeroCopy_Server[Zero-Copy服务器<br/>端口: 50053]
-        UTP_Server[UTP服务器<br/>端口: 9090]
     end
 
     %% 服务层
@@ -76,7 +75,6 @@ graph TB
     
     DataPortal_Server --> FileService
     ZeroCopy_Server --> FileService
-    UTP_Server --> FileService
 
     NodeManager --> HealthMonitor
     NodeManager --> MdnsManager
@@ -96,7 +94,7 @@ graph TB
     MdnsManager --> Network
 ```
 
-### 双模式架构设计
+### 单一架构设计
 
 ```mermaid
 graph LR
@@ -106,21 +104,10 @@ graph LR
         A3[Zero-Copy<br/>50053]
         A4[VDFS全功能]
     end
-
-    subgraph "混合模式 (hybrid_main.rs)"
-        B1[gRPC控制<br/>50051]
-        B2[UTP传输<br/>9090]
-        B3[简化文件服务]
-    end
-
-    A1 -.-> B1
-    A2 -.-> B2
     
     style A1 fill:#e1f5fe
     style A2 fill:#e8f5e8
     style A3 fill:#fff3e0
-    style B1 fill:#e1f5fe
-    style B2 fill:#f3e5f5
 ```
 
 ---
@@ -148,16 +135,6 @@ classDiagram
         +get_nodes_health() Vec~NodeHealth~
     }
 
-    class HybridNodeManager {
-        -String grpc_bind_address
-        -SocketAddr utp_bind_address
-        -Option~Arc~SimpleHybridFileService~~ hybrid_file_service
-        
-        +with_config(config: NodeConfig, utp_port: u16) Self
-        +start() Result~()~
-        +create_hybrid_file_service() Result~Arc~SimpleHybridFileService~~
-    }
-
     class HealthMonitor {
         -HashMap~String, NodeHealth~ nodes
         -u64 heartbeat_timeout_secs
@@ -181,7 +158,6 @@ classDiagram
 
     NodeManager --> HealthMonitor
     NodeManager --> MdnsManager
-    HybridNodeManager --|> NodeManager
 ```
 
 ### gRPC服务架构
@@ -201,8 +177,6 @@ graph TB
         
         FileServiceImpl[FileServiceImpl<br/>VDFS集成<br/>流式传输<br/>元数据管理]
         
-        HybridFileService[HybridFileService<br/>UTP传输协调<br/>会话管理<br/>传输统计]
-        
         LogServiceImpl[LogServiceImpl<br/>日志聚合<br/>实时流式输出]
     end
 
@@ -211,18 +185,17 @@ graph TB
         
         DataPortal_Transport[Data Portal传输<br/>标准文件传输<br/>高性能优化]
         
-        UTP_Transport[UTP传输<br/>极高性能<br/>零拷贝优化]
+        ZeroCopy_Transport[Zero-Copy传输<br/>极高性能<br/>零拷贝优化]
     end
 
     NodeService --> NodeServiceImpl
     FileService --> FileServiceImpl
-    FileService --> HybridFileService
     LogService --> LogServiceImpl
 
     NodeServiceImpl --> gRPC_Transport
     FileServiceImpl --> gRPC_Transport
     FileServiceImpl --> DataPortal_Transport
-    HybridFileService --> UTP_Transport
+    FileServiceImpl --> ZeroCopy_Transport
     LogServiceImpl --> gRPC_Transport
 ```
 
@@ -283,20 +256,12 @@ graph LR
         C[Zero-Copy端口<br/>基础端口 + 2]
     end
 
-    subgraph "混合模式端口分配"
-        D[gRPC控制端口<br/>用户指定]
-        E[UTP传输端口<br/>独立指定]
-    end
-
     A --> B
     B --> C
-    D -.独立.-> E
 
     style A fill:#e1f5fe
     style B fill:#e8f5e8
     style C fill:#fff3e0
-    style D fill:#e1f5fe
-    style E fill:#f3e5f5
 ```
 
 ---
@@ -434,7 +399,6 @@ classDiagram
         +compact() Result~()~
     }
 
-
     MetadataManager <|.. SimpleMetadataManager
     MetadataManager <|.. SledMetadataManager
 ```
@@ -457,18 +421,9 @@ graph TD
     D --> F
     E --> F
     
-    subgraph "混合模式选择"
-        G[传输请求] --> H{UTP可用?}
-        H -->|是| I[UTP传输<br/>17.2 GB/s<br/>零拷贝优化]
-        H -->|否| J[回退到gRPC<br/>保证兼容性]
-        I --> K[传输完成]
-        J --> K
-    end
-    
     style C fill:#e1f5fe
     style D fill:#e8f5e8
     style E fill:#fff3e0
-    style I fill:#f3e5f5
 ```
 
 ### Zero-Copy传输协议
@@ -500,43 +455,6 @@ sequenceDiagram
     Client->>Server: FileComplete消息
     Server->>Client: 传输统计信息
     Note over Client,Server: 性能: 2.6 GB/s<br/>协议开销: 16字节固定头
-```
-
-### UTP混合传输架构
-
-```mermaid
-graph TB
-    subgraph "UTP传输栈"
-        A[UTP应用层<br/>文件传输协议]
-        B[UTP传输层<br/>可靠传输保证]
-        C[UTP网络层<br/>数据包路由]
-        D[UDP基础层<br/>无连接传输]
-    end
-
-    subgraph "传输模式选择"
-        E[共享内存传输<br/>17.2 GB/s<br/>同机器节点]
-        F[网络传输<br/>1.2 GB/s<br/>跨网络节点]
-    end
-
-    subgraph "质量保证"
-        G[错误检测<br/>CRC32校验]
-        H[重传机制<br/>可靠传输]
-        I[流量控制<br/>拥塞避免]
-    end
-
-    A --> B
-    B --> C
-    C --> D
-    
-    A --> E
-    A --> F
-    
-    B --> G
-    B --> H
-    B --> I
-
-    style E fill:#f3e5f5
-    style F fill:#e8f5e8
 ```
 
 ---
@@ -639,13 +557,11 @@ flowchart TD
     H -->|小文件| I[gRPC流式传输]
     H -->|中文件| J[Data Portal传输]
     H -->|大文件| K[Zero-Copy传输]
-    H -->|混合模式| L[UTP传输]
     
     %% VDFS处理
     I --> M[VDFS文件系统]
     J --> M
     K --> M
-    L --> M
     
     %% 存储层处理
     M --> N[元数据管理]
@@ -692,7 +608,7 @@ sequenceDiagram
     %% 文件传输
     A->>B: 文件传输请求 (gRPC)
     B->>A: 数据传输端点信息
-    A->>B: 高性能数据传输 (Data Portal/UTP)
+    A->>B: 高性能数据传输 (Data Portal/Zero-Copy)
     B->>A: 传输确认
 
     %% 持续监控
@@ -739,43 +655,6 @@ flowchart TD
     style M fill:#fff3e0
 ```
 
-### 混合模式启动流程
-
-```mermaid
-flowchart TD
-    A[程序启动] --> B[解析命令行参数<br/>gRPC端口 + UTP端口]
-    B --> C[初始化日志系统]
-    C --> D[加载配置文件]
-    D --> E[创建HybridNodeManager]
-    
-    E --> F[启动gRPC控制服务<br/>端口: 50051]
-    E --> G[启动UTP传输服务<br/>端口: 9090]
-    E --> H[启动mDNS服务发现]
-    E --> I[启动健康监控]
-    
-    F --> J[创建HybridFileService]
-    G --> J
-    
-    J --> K[初始化UTP传输协调器]
-    K --> L[注册传输事件处理器]
-    
-    L --> M[服务就绪]
-    H --> M
-    I --> M
-    
-    M --> N[启动统计输出定时器]
-    M --> O[启动会话清理定时器]
-    
-    N --> P[等待客户端连接]
-    O --> P
-    P --> Q[处理请求]
-    Q --> P
-    
-    style A fill:#e1f5fe
-    style M fill:#f3e5f5
-    style P fill:#fff3e0
-```
-
 ### 服务依赖关系
 
 ```mermaid
@@ -792,7 +671,7 @@ graph TB
     subgraph "运行时依赖"
         H[gRPC服务] --> I[VDFS文件系统]
         J[Data Portal] --> I
-        K[UTP传输] --> L[文件服务]
+        K[Zero-Copy] --> L[文件服务]
         M[mDNS发现] --> N[健康监控]
         O[健康监控] --> P[节点管理]
     end
@@ -825,22 +704,23 @@ graph TB
 4. **🔧 可扩展性**
    - 插件化存储系统
    - 可配置缓存策略
-   - 多种传输协议支持
+   - 统一的传输协议
 
 ### 技术优势
 
-- **极致性能**: Zero-Copy传输可达2.6 GB/s，UTP传输可达17.2 GB/s
+- **高性能**: Zero-Copy传输可达2.6 GB/s
 - **容错性强**: 完善的错误处理和重试机制
 - **易于部署**: 零配置的服务发现和自动集群组建
 - **监控完善**: 全面的性能指标和健康状态监控
+- **纯Rust**: 100%内存安全，无外部依赖
 
 ### 未来发展
 
-1. **P2P传输**: 节点间直接数据传输
+1. **流媒体优化**: 专门的媒体传输特性
 2. **智能缓存**: AI驱动的缓存预测
-3. **多媒体优化**: 流媒体传输特性
-4. **边缘计算**: 分布式计算能力
+3. **边缘计算**: 分布式计算能力
+4. **安全增强**: 端到端加密和权限控制
 
 ---
 
-*🤖 本文档由 Claude AI 基于代码分析自动生成 | 版本: v1.0 | 更新时间: 2025-01-08*
+*🤖 本文档由 Claude AI 基于代码分析自动生成 | 版本: v2.0 | 更新时间: 2025-01-08*
