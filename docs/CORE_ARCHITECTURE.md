@@ -58,7 +58,7 @@ graph TB
 
     %% 基础设施层
     subgraph "基础设施层"
-        Database[(数据库<br/>Sled/RocksDB)]
+        Database[(数据库<br/>Sled)]
         LocalStorage[(本地存储)]
         Memory[(内存缓存)]
         Network[网络通信]
@@ -333,7 +333,6 @@ graph TB
 
     subgraph "持久化层"
         SledDB[(Sled数据库<br/>元数据存储)]
-        RocksDB[(RocksDB<br/>高性能元数据)]
         LocalStorage[(本地存储<br/>文件数据)]
         MemoryCache[(内存缓存<br/>热数据)]
     end
@@ -349,7 +348,6 @@ graph TB
     VFS --> ChunkManager
     
     MetadataManager --> SledDB
-    MetadataManager --> RocksDB
     StorageBackend --> LocalStorage
     CacheManager --> MemoryCache
     CacheManager --> LocalStorage
@@ -436,20 +434,9 @@ classDiagram
         +compact() Result~()~
     }
 
-    class RocksDBMetadataManager {
-        -rocksdb::DB db
-        -ColumnFamily files_cf
-        -ColumnFamily chunks_cf
-        -ColumnFamily indexes_cf
-        
-        +new(path: &Path) Result~Self~
-        +optimize_performance() Result~()~
-        +backup(path: &Path) Result~()~
-    }
 
     MetadataManager <|.. SimpleMetadataManager
     MetadataManager <|.. SledMetadataManager
-    MetadataManager <|.. RocksDBMetadataManager
 ```
 
 ---

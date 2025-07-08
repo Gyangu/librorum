@@ -12,7 +12,6 @@ pub mod index;
 pub mod consistency;
 pub mod database;
 pub mod sled_manager;
-pub mod rocksdb_manager;
 
 #[cfg(test)]
 pub mod performance_tests;
@@ -20,7 +19,6 @@ pub mod performance_tests;
 pub use manager::SimpleMetadataManager;
 pub use database::DatabaseMetadataManager;
 pub use sled_manager::SledMetadataManager;
-pub use rocksdb_manager::RocksDBMetadataManager;
 pub use index::{IndexStore, FileIndex};
 pub use consistency::ConsistencyManager;
 

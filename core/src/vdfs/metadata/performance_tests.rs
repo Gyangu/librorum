@@ -3,7 +3,6 @@
 //! 比较不同元数据管理器的性能特点：
 //! - SQLite: 关系型数据库，适合复杂查询
 //! - Sled: 现代 Rust 嵌入式数据库，高性能
-//! - RocksDB: Facebook 生产级 LSM-Tree，写入优化
 
 #[cfg(test)]
 mod performance_tests {
@@ -146,10 +145,6 @@ mod performance_tests {
         let result = benchmark_metadata_manager(&sled_manager, "Sled", &test_data).await;
         results.push(result);
 
-        // 测试 RocksDB
-        let rocksdb_manager = RocksDBMetadataManager::new_temp().await.unwrap();
-        let result = benchmark_metadata_manager(&rocksdb_manager, "RocksDB", &test_data).await;
-        results.push(result);
 
         // 测试 SQLite
         let sqlite_manager = DatabaseMetadataManager::new("sqlite::memory:").await.unwrap();
@@ -172,10 +167,6 @@ mod performance_tests {
         let result = benchmark_metadata_manager(&sled_manager, "Sled", &test_data).await;
         results.push(result);
 
-        // 测试 RocksDB
-        let rocksdb_manager = RocksDBMetadataManager::new_temp().await.unwrap();
-        let result = benchmark_metadata_manager(&rocksdb_manager, "RocksDB", &test_data).await;
-        results.push(result);
 
         // 测试 SQLite (数据量大时可能较慢)
         let sqlite_manager = DatabaseMetadataManager::new("sqlite::memory:").await.unwrap();
@@ -204,16 +195,6 @@ mod performance_tests {
         let sled_time = start.elapsed().as_millis();
         println!("  Sled 写密集测试: {}ms", sled_time);
 
-        // 测试 RocksDB 写入性能
-        let rocksdb_manager = RocksDBMetadataManager::new_temp().await.unwrap();
-        let start = Instant::now();
-        for _ in 0..3 { // 重复写入 3 次
-            for (path, file_info) in &test_data {
-                rocksdb_manager.set_file_info(path, file_info.clone()).await.unwrap();
-            }
-        }
-        let rocksdb_time = start.elapsed().as_millis();
-        println!("  RocksDB 写密集测试: {}ms", rocksdb_time);
 
         // 测试 SQLite 写入性能
         let sqlite_manager = DatabaseMetadataManager::new("sqlite::memory:").await.unwrap();
@@ -229,7 +210,6 @@ mod performance_tests {
         println!("\n📊 写密集性能排名:");
         let mut write_results = vec![
             ("Sled", sled_time),
-            ("RocksDB", rocksdb_time),
             ("SQLite", sqlite_time),
         ];
         write_results.sort_by_key(|(_, time)| *time);
@@ -248,12 +228,10 @@ mod performance_tests {
 
         // 预先插入数据到各个数据库
         let sled_manager = SledMetadataManager::new_temp().unwrap();
-        let rocksdb_manager = RocksDBMetadataManager::new_temp().await.unwrap();
         let sqlite_manager = DatabaseMetadataManager::new("sqlite::memory:").await.unwrap();
 
         for (path, file_info) in &test_data {
             sled_manager.set_file_info(path, file_info.clone()).await.unwrap();
-            rocksdb_manager.set_file_info(path, file_info.clone()).await.unwrap();
             sqlite_manager.set_file_info(path, file_info.clone()).await.unwrap();
         }
 
@@ -267,15 +245,6 @@ mod performance_tests {
         let sled_time = start.elapsed().as_millis();
         println!("  Sled 读密集测试: {}ms", sled_time);
 
-        // 测试 RocksDB 读取性能
-        let start = Instant::now();
-        for _ in 0..10 { // 重复读取 10 次
-            for (path, _) in &test_data {
-                let _ = rocksdb_manager.get_file_info(path).await.unwrap();
-            }
-        }
-        let rocksdb_time = start.elapsed().as_millis();
-        println!("  RocksDB 读密集测试: {}ms", rocksdb_time);
 
         // 测试 SQLite 读取性能
         let start = Instant::now();
@@ -290,7 +259,6 @@ mod performance_tests {
         println!("\n📊 读密集性能排名:");
         let mut read_results = vec![
             ("Sled", sled_time),
-            ("RocksDB", rocksdb_time),
             ("SQLite", sqlite_time),
         ];
         read_results.sort_by_key(|(_, time)| *time);
