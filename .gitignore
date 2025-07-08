@@ -79,4 +79,3 @@ client/librorum/Resources/librorum_backend*
 core/vdfs_disk_cache/
 core/vdfs_cache/
 core/sled_db/
-core/rocksdb_test/
