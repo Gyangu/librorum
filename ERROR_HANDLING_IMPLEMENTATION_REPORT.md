@@ -1,21 +1,22 @@
-# Librorum 零拷贝传输错误处理和重试机制实现报告
+# Librorum Data Portal传输错误处理和重试机制实现报告
 
 ## 🎯 实现目标
-为Librorum分布式文件系统的零拷贝传输实现完整的错误处理、重试机制和弹性架构，确保在生产环境中的高可用性和可靠性。
+为Librorum分布式文件系统的Data Portal智能传输实现完整的错误处理、重试机制和弹性架构，确保在生产环境中的高可用性和可靠性。
 
 ## 📊 实现概览
 
 ### ✅ 已完成的功能
 
-#### 1. **错误类型系统** (`ZeroCopyError`)
+#### 1. **错误类型系统** (`DataPortalError`)
 ```rust
 #[derive(Debug, thiserror::Error)]
-pub enum ZeroCopyError {
+pub enum DataPortalError {
     Connection(#[from] std::io::Error),           // 连接错误
     Timeout { message: String },                 // 超时错误
     Protocol { message: String },                // 协议错误
     FileOperation { message: String },           // 文件操作错误
     Network { message: String },                 // 网络错误
+    TransportSelection { message: String },      // 传输选择错误
     MaxRetriesExceeded { attempts: u32 },        // 重试超限
     Other(#[from] anyhow::Error),                // 其他错误
 }

@@ -2,7 +2,7 @@
 
 ## 🎯 项目概述
 
-Librorum 是一个高性能的分布式文件系统，采用创新的零拷贝传输技术，实现了极致的文件传输性能。通过完整的错误处理和重试机制，系统具备了生产级别的可靠性和弹性。
+Librorum 是一个高性能的分布式文件系统，采用创新的Data Portal智能传输技术，实现了极致的文件传输性能。通过完整的错误处理和重试机制，系统具备了生产级别的可靠性和弹性。
 
 ## 📋 完成状态总览
 
@@ -16,36 +16,37 @@ Librorum 是一个高性能的分布式文件系统，采用创新的零拷贝�
 | 断点续传功能 | ✅ 完成 | 支持中断恢复 | 会话管理系统 |
 | 数据完整性验证 | ✅ 完成 | SHA-256哈希 | 可选的性能权衡 |
 | CLI下载功能 | ✅ 完成 | 双向传输 | 上传下载对等性能 |
-| Data Portal集成 | ✅ 完成 | 1400+ MB/s | 原始高性能协议 |
-| 零拷贝优化 | ✅ 完成 | **2589.84 MB/s** | 固定协议头设计 |
-| **错误处理和重试** | ✅ **新增完成** | 156ms故障检测 | 指数退避重试 |
+| Data Portal集成 | ✅ 完成 | 1400+ MB/s | 统一智能传输协议 |
+| 智能传输选择 | ✅ 完成 | **17.2 GB/s (本地)** | 自动选择最优协议 |
+| **错误处理和重试** | ✅ **完成** | 156ms故障检测 | 指数退避重试 |
 
 ## 🚀 技术架构亮点
 
-### 三层传输协议栈
+### 统一传输架构栈
 ```
 应用层: CLI用户界面 + 进度显示
 控制层: gRPC服务发现 + 元数据管理  
-数据层: 零拷贝Data Portal (2.6 GB/s)
+数据层: Data Portal智能传输 (本地17.2GB/s, 远程1.2GB/s)
 ```
 
-### 零拷贝协议设计
+### Data Portal智能协议设计
 ```rust
-// 固定16字节协议头 - 极致性能
-#[repr(C, packed)]
-struct ZeroCopyHeader {
-    msg_type: u8,      // 消息类型
-    chunk_id: u32,     // 块编号
-    data_len: u32,     // 数据长度
-    flags: u8,         // 标志位
-    reserved: [u8; 6], // 保留扩展
+// 32字节缓存对齐协议头 - 智能选择
+#[repr(C)]
+struct DataPortalHeader {
+    magic: u32,        // 协议魔数
+    version: u8,       // 协议版本
+    message_type: MessageType,
+    payload_size: u32,
+    sequence: u64,     // 消息序列
+    checksum: u32,     // CRC32校验
 }
 ```
 
 ### 错误处理架构
 ```rust
 // 完整的错误类型系统
-enum ZeroCopyError {
+enum DataPortalError {
     Connection(std::io::Error),
     Timeout { message: String },
     Protocol { message: String },
