@@ -13,9 +13,6 @@ pub mod progress;
 pub mod resume_transfer;
 pub mod concurrent_transfer_client;
 pub mod optimized_data_portal_client;
-pub mod zero_copy_client;
-pub mod zero_copy_demo;
-pub mod error_handling_test;
 
 /// librorum 分布式文件系统命令行工具
 #[derive(Parser, Debug, PartialEq)]
@@ -157,9 +154,9 @@ pub enum Command {
         #[clap(long)]
         max_performance: bool,
         
-        /// 启用完全零拷贝模式 (最高性能，无协议开销)
+        /// 启用Data Portal最高性能模式 (自动选择最优传输协议)
         #[clap(long)]
-        zero_copy: bool,
+        data_portal_optimized: bool,
     },
 
     /// 下载文件从分布式文件系统
@@ -204,9 +201,9 @@ pub enum Command {
         #[clap(long)]
         max_performance: bool,
         
-        /// 启用完全零拷贝模式 (最高性能，无协议开销)
+        /// 启用Data Portal最高性能模式 (自动选择最优传输协议)
         #[clap(long)]
-        zero_copy: bool,
+        data_portal_optimized: bool,
     },
 
     /// 列出远程目录中的文件
@@ -326,16 +323,13 @@ pub enum Command {
         #[clap(long)]
         max_performance: bool,
         
-        /// 启用完全零拷贝模式测试 (最高性能，无协议开销)
+        /// 启用Data Portal最高性能模式测试 (自动选择最优传输协议)
         #[clap(long)]
-        zero_copy: bool,
+        data_portal_optimized: bool,
     },
     
-    /// 运行零拷贝性能演示
-    DemoZeroCopy,
-    
-    /// 测试错误处理和重试机制
-    TestErrorHandling,
+    /// 运行Data Portal性能演示
+    DemoDataPortal,
 }
 
 /// 尝试连接到core服务
@@ -376,22 +370,6 @@ pub async fn get_data_portal_endpoint(server: &str) -> Result<std::net::SocketAd
         .with_context(|| format!("无法解析Data Portal地址: {}", addr_str))
 }
 
-/// 获取零拷贝Data Portal端点
-pub fn get_zero_copy_endpoint(server: &str) -> Result<std::net::SocketAddr> {
-    let url = url::Url::parse(server)
-        .with_context(|| format!("无效的服务器地址: {}", server))?;
-    
-    let host = url.host_str()
-        .ok_or_else(|| anyhow::anyhow!("服务器地址必须包含主机名"))?;
-    
-    // 零拷贝端口使用gRPC端口+2
-    let grpc_port = url.port().unwrap_or(50051);
-    let zero_copy_port = grpc_port + 2;
-    
-    let addr_str = format!("{}:{}", host, zero_copy_port);
-    addr_str.parse()
-        .with_context(|| format!("无法解析零拷贝Data Portal地址: {}", addr_str))
-}
 
 /// 解析服务器地址，提取Data Portal端点 (已弃用，保留向后兼容)
 pub fn parse_data_portal_endpoint(server: &str) -> Result<std::net::SocketAddr> {
