@@ -12,4 +12,5 @@ pub use proto::*;
 // Re-export Data Portal components
 pub use data_portal::{
     DataPortalServer, DataPortalClient, DataPortalConfig,
+    SmartDataPortalClient, TransportPerformanceStats, TransportStats,
 };

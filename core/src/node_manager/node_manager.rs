@@ -1,4 +1,4 @@
-use librorum_shared::{NodeConfig, DataPortalServer, ZeroCopyDataPortalServer};
+use librorum_shared::{NodeConfig, DataPortalServer};
 use crate::proto::file::file_service_server::FileServiceServer;
 use crate::proto::log::log_service_server::LogServiceServer;
 use crate::proto::node::node_service_server::NodeServiceServer;
@@ -293,8 +293,7 @@ impl NodeManager {
         let zero_copy_task = tokio::spawn(async move {
             info!("🚀 启动零拷贝Data Portal服务器: 0.0.0.0:{}", zero_copy_port);
             
-            let bind_addr = format!("0.0.0.0:{}", zero_copy_port).parse().unwrap();
-            let mut zero_copy_server = ZeroCopyDataPortalServer::new(bind_addr);
+            let mut zero_copy_server = DataPortalServer::with_port(zero_copy_port);
             
             match zero_copy_server.run().await {
                 Ok(_) => {

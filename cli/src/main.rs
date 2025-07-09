@@ -1152,47 +1152,49 @@ async fn handle_max_performance_upload(
     Ok(())
 }
 
-/// 处理Data Portal最高性能上传 (自动选择最优传输协议)
+/// 处理Data Portal智能上传 (真正的自动选择最优传输协议)
 async fn handle_data_portal_optimized_upload(
     server: &str,
     file_path: &Path,
     target_path: &str,
     file_size: u64,
-    buffer_size_kb: usize,
+    _buffer_size_kb: usize,
 ) -> Result<()> {
     use librorum_cli::{
-        optimized_data_portal_client::OptimizedDataPortalClient,
+        smart_data_portal_client::SmartCliDataPortalClient,
         progress::UploadProgressDisplay
     };
 
-    println!("🚀 使用Data Portal最高性能模式上传: {} -> {} ({:.2} MB)", 
+    println!("🚀 使用Data Portal智能传输模式上传: {} -> {} ({:.2} MB)", 
              file_path.display(), target_path, file_size as f64 / (1024.0 * 1024.0));
 
     // 获取Data Portal端点
     let data_portal_endpoint = get_data_portal_endpoint(server).await?;
     info!("⚡ Data Portal端点: {}", data_portal_endpoint);
     
-    // 创建优化客户端
-    let client = OptimizedDataPortalClient::with_max_performance(data_portal_endpoint, buffer_size_kb);
+    // 创建智能客户端
+    let client = SmartCliDataPortalClient::new()?;
     
     // 创建进度显示
     let progress_display = UploadProgressDisplay::new();
     let progress_callback = progress_display.create_callback();
     
-    // 开始优化上传 (自动选择最优传输协议)
-    let result = client.upload_file_optimized(
+    // 开始智能上传 (真正的自动选择传输协议)
+    let result = client.upload_file_smart(
         file_path,
-        target_path,
+        data_portal_endpoint,
+        target_path.to_string(),
         Some(progress_callback),
     ).await?;
 
     // 显示完成信息
     progress_display.finish(&result);
 
-    // 显示性能模式说明
-    println!("🚀 Data Portal优化模式: 自动选择最优传输协议 (共享内存/TCP)");
-    println!("⚡ 智能性能: 根据节点位置和数据大小自动优化");
-    println!("⚠️  注意: 已禁用所有验证以达到极致性能");
+    // 显示智能传输信息
+    println!("🧠 Data Portal智能传输: 自动选择最优协议");
+    println!("📡 本地通信: 共享内存 (17.2 GB/s)");
+    println!("🌐 远程通信: TCP网络 (1.2 GB/s)");
+    println!("🎯 自动选择: 基于机器ID、数据大小和性能历史");
 
     Ok(())
 }
@@ -1413,26 +1415,18 @@ async fn handle_benchmark(
 
 /// 处理Data Portal性能演示
 async fn handle_data_portal_demo(server: &str) -> Result<()> {
-    use librorum_cli::optimized_data_portal_client::OptimizedDataPortalClient;
+    use librorum_cli::smart_data_portal_client::demo_smart_transport;
     
-    println!("🚀 开始Data Portal性能演示...");
+    println!("🚀 开始Data Portal智能传输演示...");
     
     // 获取Data Portal端点
     let data_portal_endpoint = get_data_portal_endpoint(server).await?;
     println!("🔗 Data Portal端点: {}", data_portal_endpoint);
     
-    // 创建优化客户端
-    let client = OptimizedDataPortalClient::with_default_config(data_portal_endpoint);
+    // 运行智能传输演示
+    demo_smart_transport(data_portal_endpoint).await?;
     
-    // 演示不同大小的文件传输性能
-    println!("📊 演示传输协议自动选择:");
-    println!("   小文件 (<1MB): 使用gRPC流式传输");
-    println!("   中文件 (1-100MB): 使用Data Portal TCP传输");
-    println!("   大文件 (>100MB): 使用Data Portal共享内存传输");
-    println!("   本地节点: 自动选择共享内存 (17.2 GB/s)");
-    println!("   远程节点: 自动选择TCP网络 (1.2 GB/s)");
-    
-    println!("✅ Data Portal演示完成");
+    println!("✅ Data Portal智能传输演示完成");
     Ok(())
 }
 

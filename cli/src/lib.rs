@@ -13,6 +13,7 @@ pub mod progress;
 pub mod resume_transfer;
 pub mod concurrent_transfer_client;
 pub mod optimized_data_portal_client;
+pub mod smart_data_portal_client;
 
 /// librorum 分布式文件系统命令行工具
 #[derive(Parser, Debug, PartialEq)]
